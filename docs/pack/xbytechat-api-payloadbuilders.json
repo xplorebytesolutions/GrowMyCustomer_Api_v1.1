@@ -1,0 +1,34 @@
+{
+  "name": "xbytechat-api/PayloadBuilders",
+  "generatedAt": "2025-09-12 10:33:04 +00:00",
+  "files": [
+    {
+      "path": "xbytechat-api/PayloadBuilders/ImageMessagePayloadBuilder.cs",
+      "sha256": "71c13746d4e6cc70735324c5c2c755b80e4c7d032e71a97969c3efe007aa68ae",
+      "language": "csharp",
+      "size": 680,
+      "content": "using xbytechat.api.DTOs.Messages;\n\nnamespace xbytechat.api.PayloadBuilders\n{\n    /// <summary>\n    /// Builds payload for sending image messages with media URL.\n    /// </summary>\n    public class ImageMessagePayloadBuilder : IWhatsAppPayloadBuilder\n    {\n        public object BuildPayload(BaseMessageDto dto)\n        {\n            var imageDto = dto as ImageMessageDto;\n\n            return new\n            {\n                messaging_product = \"whatsapp\",\n                to = imageDto.RecipientNumber,\n                type = \"image\",\n                image = new\n                {\n                    link = imageDto.MediaUrl\n                }\n            };\n        }\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/PayloadBuilders/IWhatsAppPayloadBuilder.cs",
+      "sha256": "2a2ff0592129a93fea8aa20df5fe1e8454dbfbe1640d5a1e15963af93dcd7922",
+      "language": "csharp",
+      "size": 190,
+      "content": "namespace xbytechat.api.PayloadBuilders\n{\n    using xbytechat.api.DTOs.Messages;\n\n    public interface IWhatsAppPayloadBuilder\n    {\n        object BuildPayload(BaseMessageDto dto);\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/PayloadBuilders/TemplateMessagePayloadBuilder.cs",
+      "sha256": "70f39daad2789c61f03ade184abdf96a43221189b751178dfa1955c123b5f884",
+      "language": "csharp",
+      "size": 2013,
+      "content": "using xbytechat.api.DTOs.Messages;\n\nnamespace xbytechat.api.PayloadBuilders\n{\n    public class TemplateMessagePayloadBuilder : IWhatsAppPayloadBuilder\n    {\n        public object BuildPayload(BaseMessageDto dto)\n        {\n            var templateDto = dto as TemplateMessageDto;\n            if (templateDto == null)\n                throw new InvalidCastException(\"DTO is not of type TemplateMessageDto.\");\n\n            var components = new List<object>();\n\n            // 🧠 Body parameters\n            if (templateDto.TemplateParameters != null && templateDto.TemplateParameters.Any())\n            {\n                components.Add(new\n                {\n                    type = \"body\",\n                    parameters = templateDto.TemplateParameters.Select(p => new\n                    {\n                        type = \"text\",\n                        text = p\n                    }).ToList()\n                });\n            }\n\n            // ✅ Add button placeholders (Meta requires them for static buttons too)\n            components.Add(new\n            {\n                type = \"button\",\n                sub_type = \"url\",\n                index = \"0\",\n                parameters = new object[] { }  // 👈 no parameters if static URL\n            });\n\n            components.Add(new\n            {\n                type = \"button\",\n                sub_type = \"phone_number\",\n                index = \"1\",\n                parameters = new object[] { }  // 👈 no parameters if static phone\n            });\n\n            return new\n            {\n                messaging_product = \"whatsapp\",\n                to = templateDto.RecipientNumber,\n                type = \"template\",\n                template = new\n                {\n                    name = templateDto.TemplateName,\n                    language = new\n                    {\n                        code = templateDto.LanguageCode ?? \"en_US\"\n                    },\n                    components\n                }\n            };\n        }\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/PayloadBuilders/TextMessagePayloadBuilder.cs",
+      "sha256": "ce8e2e75c7865d9b08bebb267ceb84f7cdd0e77bd971c609576979b02726a590",
+      "language": "csharp",
+      "size": 750,
+      "content": "// File: PayloadBuilders/TextMessagePayloadBuilder.cs\nusing xbytechat.api.DTOs.Messages;\n\nnamespace xbytechat.api.PayloadBuilders\n{\n    public class TextMessagePayloadBuilder : IWhatsAppPayloadBuilder\n    {\n        public object BuildPayload(BaseMessageDto dto)\n        {\n            var textDto = dto as TextMessageDto;\n\n            if (textDto == null)\n                throw new InvalidCastException(\"DTO is not of type TextMessageDto.\");\n\n            return new\n            {\n                messaging_product = \"whatsapp\",\n                to = textDto.RecipientNumber,\n                type = \"text\",\n                text = new\n                {\n                    body = textDto.MessageContent\n                }\n            };\n        }\n    }\n}\n"
+    }
+  ]
+}

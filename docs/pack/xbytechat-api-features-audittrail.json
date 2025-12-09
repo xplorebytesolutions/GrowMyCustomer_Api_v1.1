@@ -1,0 +1,34 @@
+{
+  "name": "xbytechat-api/Features/AuditTrail",
+  "generatedAt": "2025-09-12 10:33:04 +00:00",
+  "files": [
+    {
+      "path": "xbytechat-api/Features/AuditTrail/DTOs/CreateAuditLogDto.cs",
+      "sha256": "845322cca23fe6666ea3c5947bf45d55d34363c27d5bacec30375a04b24a73ef",
+      "language": "csharp",
+      "size": 471,
+      "content": "namespace xbytechat.api.Features.AuditTrail.DTOs;\n\npublic class CreateAuditLogDto\n{\n    public string ActionType { get; set; }\n    public string Module { get; set; }\n    public string? RecordId { get; set; }\n\n    public string? OldValues { get; set; }\n    public string? NewValues { get; set; }\n    public string? Description { get; set; }\n\n    public string? IPAddress { get; set; }\n    public string? UserAgent { get; set; }\n    public string? Location { get; set; }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Features/AuditTrail/Models/AuditLog.cs",
+      "sha256": "91e4760f6e10564db50d99acec9f1c83de5fd0b8ca2e0d3bc5874d645ac93a45",
+      "language": "csharp",
+      "size": 1034,
+      "content": "using System;\n\nnamespace xbytechat.api.Features.AuditTrail.Models\n{\n    public class AuditLog\n    {\n        public Guid Id { get; set; } = Guid.NewGuid();\n\n        // 📍 Business Context (Multi-Tenant)\n        public Guid BusinessId { get; set; }\n\n        // 🙋 Who performed the action\n        public Guid PerformedByUserId { get; set; }\n        public string? PerformedByUserName { get; set; } // Optional for display\n        public string? RoleAtTime { get; set; } // admin / business / agent\n\n        // 🔍 Action Details\n        public string ActionType { get; set; } = \"\"; // e.g., campaign.created, user.login\n        public string? Description { get; set; } // Free text for summary or custom note\n\n        // 🌐 Optional: Technical metadata\n        public string? IPAddress { get; set; }\n        public string? UserAgent { get; set; }\n        public string? Location { get; set; } // Optional for geo-capture later\n\n        // 🕒 Timestamp\n        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Features/AuditTrail/Services/AuditLogService.cs",
+      "sha256": "6b18d820c4191681a1bf26d6672f189bce0cadcfba3c8beb9e29dbed4ad4fdd9",
+      "language": "csharp",
+      "size": 536,
+      "content": "using xbytechat.api.Features.AuditTrail.Models;\nusing xbytechat.api.Repositories;\nusing xbytechat.api.Repositories.Interfaces;\n\nnamespace xbytechat.api.Features.AuditTrail.Services\n{\n    public class AuditLogService : IAuditLogService\n    {\n        private readonly IGenericRepository<AuditLog> _repo;\n\n        public AuditLogService(IGenericRepository<AuditLog> repo)\n        {\n            _repo = repo;\n        }\n\n        public async Task SaveLogAsync(AuditLog log)\n        {\n            await _repo.AddAsync(log);\n        }\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Features/AuditTrail/Services/IAuditLogService.cs",
+      "sha256": "65d811af2c7dc349002b7b1a340a765025625f9fe31c241dccc8f3eaeab15330",
+      "language": "csharp",
+      "size": 197,
+      "content": "using xbytechat.api.Features.AuditTrail.Models;\n\nnamespace xbytechat.api.Features.AuditTrail.Services\n{\n    public interface IAuditLogService\n    {\n        Task SaveLogAsync(AuditLog log);\n    }\n}\n"
+    }
+  ]
+}

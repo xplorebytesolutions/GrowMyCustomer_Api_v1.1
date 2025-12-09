@@ -1,0 +1,55 @@
+{
+  "name": "xbytechat-api/DTOs",
+  "generatedAt": "2025-09-12 10:33:04 +00:00",
+  "files": [
+    {
+      "path": "xbytechat-api/DTOs/Messages/BaseMessageDto.cs",
+      "sha256": "9af6b10a0f81ca1fef4fa6f55228cf022cf8f574e7dc66dcee263cde3074a20d",
+      "language": "csharp",
+      "size": 440,
+      "content": "using System;\nusing System.ComponentModel.DataAnnotations;\n\nnamespace xbytechat.api.DTOs.Messages\n{\n    public abstract class BaseMessageDto\n    {\n        [Required]\n        public Guid BusinessId { get; set; }\n\n        [Required]\n        [Phone]\n        public string RecipientNumber { get; set; }\n\n        public abstract string MessageContent { get; set; }\n\n        //[Required]\n        //public string MessageType { get; set; }\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/DTOs/Messages/BulkMessageDto.cs",
+      "sha256": "c9cf233e8ad3bf868c53de4f40343b326e34c668d015097e2aa6a1221696b9c4",
+      "language": "csharp",
+      "size": 647,
+      "content": "using System;\nusing System.Collections.Generic;\nusing System.ComponentModel.DataAnnotations;\n\nnamespace xbytechat.api.DTOs.Messages\n{\n    public class BulkMessageDto\n    {\n        [Required]\n        public List<Guid> ContactIds { get; set; } = new();\n\n        [Required]\n        public string MessageType { get; set; } = string.Empty; // \"text\" or \"template\"\n\n        [Required]\n        public string MessageTemplate { get; set; } = string.Empty;\n\n        public string? TemplateName { get; set; }\n\n        public List<string>? TemplateParams { get; set; }\n\n        public DateTime? ScheduledAt { get; set; } // Optional future scheduling\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/DTOs/Messages/CtaMessageDto.cs",
+      "sha256": "80af1338096deb56a727a9ac543829c364442d6f67637455296e227a56abbd7b",
+      "language": "csharp",
+      "size": 1326,
+      "content": "using System;\nusing System.Collections.Generic;\n\nnamespace xbytechat.api.DTOs.Messages\n{\n    public class CtaMessageDto\n    {\n        // 🎯 Required Fields\n        public string RecipientPhone { get; set; } = string.Empty;\n        public string BodyText { get; set; } = string.Empty;\n        public List<string> Buttons { get; set; } = new();\n\n        // 🔗 Optional Source Info\n        public Guid? BusinessId { get; set; }          // Optional: Track for MessageLog\n        public Guid? CampaignId { get; set; }          // Optional: If triggered via Campaign\n        public string? SourceModule { get; set; }      // e.g., \"Catalog\", \"CRM\", \"Timeline\"\n\n        // 👤 Customer Context (Optional Enrichment)\n        public string? CustomerId { get; set; }\n        public string? CustomerName { get; set; }\n        public string? CustomerPhone { get; set; }\n\n        // 📦 Advanced (Optional but useful)\n        public string? BotId { get; set; }             // Bot which served this (optional)\n        public string? RefMessageId { get; set; }      // Link to previous message (thread)\n        public string? CTATriggeredFrom { get; set; }  // e.g., “Buy Now”, “Know More”\n\n        // ⏱️ Timestamps / Meta\n        public DateTime? ScheduledAt { get; set; }     // For future automation (optional)\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/DTOs/Messages/ImageMessageDto.cs",
+      "sha256": "f5c8436e0d3055ef94a5fd88067f1497534a889f1296174babd92385a36494cf",
+      "language": "csharp",
+      "size": 340,
+      "content": "using System.ComponentModel.DataAnnotations;\n\nnamespace xbytechat.api.DTOs.Messages\n{\n    public class ImageMessageDto : BaseMessageDto\n    {\n        [Required]\n        public override string MessageContent { get; set; } = string.Empty;\n\n        [Required]\n        [Url]\n        public string MediaUrl { get; set; } = string.Empty;\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/DTOs/Messages/RawMessageWrapper.cs",
+      "sha256": "d7ac355237d8f59f61eeeee123e9450f669ff9eb387359212b8c2c2456ac4353",
+      "language": "csharp",
+      "size": 220,
+      "content": "// DTOs/Messages/RawMessageWrapper.cs\nusing Newtonsoft.Json.Linq;\n\npublic class RawMessageWrapper\n{\n    public string MessageType { get; set; } = string.Empty;\n    public JObject Payload { get; set; } = new JObject();\n}\n"
+    },
+    {
+      "path": "xbytechat-api/DTOs/Messages/TemplateMessageDto.cs",
+      "sha256": "06b028cea23f4720af49039d87a58cf7134087ad5744eae187c7900c0a2daa35",
+      "language": "csharp",
+      "size": 1033,
+      "content": "using System.ComponentModel.DataAnnotations;\n\nnamespace xbytechat.api.DTOs.Messages\n{\n    /// <summary>\n    /// DTO for sending WhatsApp template-based messages.\n    /// </summary>\n    public class TemplateMessageDto : BaseMessageDto\n    {\n        [Required]\n        public string TemplateName { get; set; } = string.Empty;\n\n        [Required]\n        public string LanguageCode { get; set; } = \"en_US\";\n\n        public Dictionary<string, string> TemplateParameters { get; set; }\n\n        public List<ButtonPayloadDto>? ButtonParams { get; set; } // ✅ NEW\n\n        public override string MessageContent { get; set; } = \"[Template]\";\n    }\n\n    /// <summary>\n    /// DTO for each button in a WhatsApp template.\n    /// </summary>\n    public class ButtonPayloadDto\n    {\n        public string SubType { get; set; } = \"url\"; // or \"phone_number\"\n        public string Index { get; set; } = \"0\";      // 0-based index as string\n        public string Param { get; set; } = string.Empty; // dynamic value for URL or phone number\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/DTOs/Messages/TextMessageDto.cs",
+      "sha256": "a899c48829d76e7fdf88be5bdafe15ab5307342c557b6431ba43c60f51a8ee11",
+      "language": "csharp",
+      "size": 244,
+      "content": "using System.ComponentModel.DataAnnotations;\n\nnamespace xbytechat.api.DTOs.Messages\n{\n    public class TextMessageDto : BaseMessageDto\n    {\n        [Required]\n        public override string MessageContent { get; set; } = string.Empty;\n    }\n}\n"
+    }
+  ]
+}

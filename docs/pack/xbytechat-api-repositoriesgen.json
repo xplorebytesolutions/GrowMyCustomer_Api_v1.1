@@ -1,0 +1,20 @@
+{
+  "name": "xbytechat-api/RepositoriesGen",
+  "generatedAt": "2025-09-12 10:33:04 +00:00",
+  "files": [
+    {
+      "path": "xbytechat-api/RepositoriesGen/Implementations/GenericRepository.cs",
+      "sha256": "68fdbced75094ad69adcf2073501cec37b1745f7b4d6206826d6aedc33fe0a46",
+      "language": "csharp",
+      "size": 2091,
+      "content": "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Linq.Expressions;\nusing System.Threading.Tasks;\nusing Microsoft.EntityFrameworkCore;\nusing xbytechat.api.Repositories.Interfaces;\n\nnamespace xbytechat.api.Repositories.Implementations\n{\n    public class GenericRepository<T> : IGenericRepository<T> where T : class\n    {\n        private readonly AppDbContext _context;\n        private readonly DbSet<T> _dbSet;\n\n        public GenericRepository(AppDbContext context)\n        {\n            _context = context;\n            _dbSet = _context.Set<T>();\n        }\n\n        public async Task<IEnumerable<T>> GetAllAsync()\n        {\n            return await _dbSet.ToListAsync();\n        }\n\n        public async Task<T?> FindByIdAsync(Guid id)\n        {\n            return await _dbSet.FindAsync(id);\n        }\n\n        public async Task AddAsync(T entity)\n        {\n            await _dbSet.AddAsync(entity);\n        }\n\n        public void Update(T entity)\n        {\n            _dbSet.Update(entity);\n        }\n\n        public void Delete(T entity)\n        {\n            _dbSet.Remove(entity);\n        }\n\n        public async Task<T?> FirstOrDefaultAsync(Expression<Func<T, bool>> predicate)\n        {\n            return await _dbSet.FirstOrDefaultAsync(predicate);\n        }\n\n        public async Task<IEnumerable<T>> FindAllAsync(Expression<Func<T, bool>> predicate)\n        {\n            return await _dbSet.Where(predicate).ToListAsync();\n        }\n\n        public async Task<bool> ExistsAsync(Expression<Func<T, bool>> predicate)\n        {\n            return await _dbSet.AnyAsync(predicate);\n        }\n\n        public async Task SaveAsync()\n        {\n            await _context.SaveChangesAsync();\n        }\n\n        public async Task<List<T>> WhereAsync(Expression<Func<T, bool>> predicate)\n        {\n            return await _context.Set<T>().Where(predicate).ToListAsync();\n        }\n\n        // ✅ NEW: Enables .Include(), .ThenInclude(), etc.\n        public IQueryable<T> AsQueryable()\n        {\n            return _dbSet.AsQueryable();\n        }\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/RepositoriesGen/Interfaces/IGenericRepository.cs",
+      "sha256": "dce9a4518c5e6db0da8996246969bbc864c23c5ec0eeb93ac053cc16a33bc920",
+      "language": "csharp",
+      "size": 941,
+      "content": "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Linq.Expressions;\nusing System.Threading.Tasks;\n\nnamespace xbytechat.api.Repositories.Interfaces\n{\n    public interface IGenericRepository<T> where T : class\n    {\n        // 🔍 Basic Reads\n        Task<IEnumerable<T>> GetAllAsync();\n        Task<T?> FindByIdAsync(Guid id);\n        Task<T?> FirstOrDefaultAsync(Expression<Func<T, bool>> predicate);\n        Task<IEnumerable<T>> FindAllAsync(Expression<Func<T, bool>> predicate);\n\n        // 🔐 Checks\n        Task<bool> ExistsAsync(Expression<Func<T, bool>> predicate);\n\n        // ✍️ Commands\n        Task AddAsync(T entity);\n        void Update(T entity);\n        void Delete(T entity);\n        Task SaveAsync();\n\n        Task<List<T>> WhereAsync(Expression<Func<T, bool>> predicate);\n\n        // ✅ New: Supports advanced LINQ operations like Include()\n        IQueryable<T> AsQueryable();\n    }\n}\n"
+    }
+  ]
+}

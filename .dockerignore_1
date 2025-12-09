@@ -1,0 +1,16 @@
+# Good defaults:
+**/bin/
+**/obj/
+*.user
+*.suo
+*.swp
+*.tmp
+*.DS_Store
+.git
+.gitignore
+.vscode
+.idea
+node_modules/
+logs/
+.env
+# DO NOT put '*' or 'xbytechat-api/' here

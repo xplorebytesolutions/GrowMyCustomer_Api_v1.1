@@ -1,0 +1,817 @@
+﻿using System;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using xbytechat.api.Features.ESU.Facebook.Abstractions;
+using xbytechat.api.Features.ESU.Facebook.Contracts;
+using xbytechat.api.Features.ESU.Facebook.DTOs;
+using xbytechat.api.Features.ESU.Facebook.Options;
+using xbytechat.api.Features.ESU.Shared;
+using xbytechat.api.Features.WhatsAppSettings.Services;
+using xbytechat_api.WhatsAppSettings.DTOs;
+using xbytechat_api.WhatsAppSettings.Services;
+
+namespace xbytechat.api.Features.ESU.Facebook.Services
+{
+    internal sealed class FacebookEsuService : IFacebookEsuService
+    {
+        private const string Provider = "META_CLOUD";
+
+        private readonly IOptions<EsuOptions> _options;
+        private readonly IOptions<FacebookOauthOptions> _oauthOpts;
+        private readonly IEsuStateStore _stateStore;
+        private readonly IEsuFlagStore _flagStore;
+        private readonly IFacebookOauthClient _oauth;
+        private readonly IEsuTokenStore _tokens;
+        private readonly IFacebookTokenService _fbTokens;
+        private readonly IWhatsAppSettingsService _waSettings;
+        private readonly IWhatsAppPhoneNumberService _waPhones;
+        private readonly ILogger<FacebookEsuService> _log;
+        private readonly IEsuStatusService _esuStatus;
+        public FacebookEsuService(
+            IOptions<EsuOptions> options,
+            IEsuStateStore stateStore,
+            IEsuFlagStore flagStore,
+            IFacebookOauthClient oauth,
+            IEsuTokenStore tokens,
+            IFacebookTokenService fbTokens,
+            IWhatsAppSettingsService waSettings,
+            IWhatsAppPhoneNumberService waPhones,
+            IOptions<FacebookOauthOptions> oauthOpts,
+            ILogger<FacebookEsuService> log,
+            IEsuStatusService esuStatus)
+        {
+            _options = options;
+            _stateStore = stateStore;
+            _flagStore = flagStore;
+            _oauth = oauth;
+            _tokens = tokens;
+            _fbTokens = fbTokens;
+            _waSettings = waSettings;
+            _waPhones = waPhones;
+            _oauthOpts = oauthOpts;
+            _log = log;
+            _esuStatus = esuStatus;
+        }
+
+        // =======================
+        // ESU START
+        // =======================
+        public async Task<FacebookEsuStartResponseDto> StartAsync(
+            Guid businessId,
+            string? returnUrl,
+            CancellationToken ct = default)
+        {
+            var cfg = _options.Value.Facebook;
+
+            if (string.IsNullOrWhiteSpace(cfg.AppId))
+                throw new InvalidOperationException("ESU.Facebook.AppId is not configured.");
+            if (string.IsNullOrWhiteSpace(cfg.RedirectUri))
+                throw new InvalidOperationException("ESU.Facebook.RedirectUri is not configured.");
+            if (string.IsNullOrWhiteSpace(cfg.ConfigId))
+                throw new InvalidOperationException("ESU.Facebook.ConfigId is not configured.");
+
+            var state = CreateStateToken(businessId, returnUrl);
+            var ttl = TimeSpan.FromMinutes(Math.Max(1, cfg.StateTtlMinutes));
+
+            await _stateStore.StoreAsync(state, businessId, ttl);
+
+            var dialogVersion = _oauthOpts.Value.GraphApiVersion?.Trim('/') ?? "v20.0";
+            var dialogBase = $"https://www.facebook.com/{dialogVersion}/dialog/oauth";
+
+            var query = new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["client_id"] = cfg.AppId,
+                ["redirect_uri"] = cfg.RedirectUri,
+                ["state"] = state,
+                ["response_type"] = "code",
+                ["config_id"] = cfg.ConfigId
+            };
+
+            var launchUrl = QueryHelpers.AddQueryString(dialogBase, query);
+
+            _log.LogInformation(
+                 "ESU Start: biz={BusinessId}, statePrefix={StatePrefix}, url={Url}",
+                 businessId,
+                 state.Length > 16 ? state[..16] : state,
+                 launchUrl);
+
+
+            return new FacebookEsuStartResponseDto
+            {
+                LaunchUrl = launchUrl,
+                State = state,
+                ExpiresAtUtc = DateTime.UtcNow.Add(ttl)
+            };
+        }
+
+        // =======================
+        // ESU CALLBACK
+        // =======================
+        public async Task<FacebookEsuCallbackResponseDto> HandleCallbackAsync(
+            string code,
+            string state,
+            CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(code))
+                throw new InvalidOperationException("OAuth failed: missing 'code'.");
+            if (string.IsNullOrWhiteSpace(state))
+                throw new InvalidOperationException("OAuth failed: missing 'state'.");
+
+            var (found, businessId) = await _stateStore.TryConsumeAsync(state);
+            if (!found || businessId == Guid.Empty)
+                throw new InvalidOperationException("Invalid or expired state.");
+
+            _log.LogInformation(
+                "ESU Callback: biz={BusinessId}, statePrefix={StatePrefix}",
+                businessId,
+                state.Length > 16 ? state[..16] : state);
+
+            // 1) Exchange short-lived → long-lived token
+            var token = await _oauth.ExchangeCodeAsync(code, ct);
+            if (string.IsNullOrWhiteSpace(token?.AccessToken))
+                throw new InvalidOperationException("OAuth exchange did not return an access token.");
+
+            token = await _oauth.ExchangeForLongLivedAsync(token, ct);
+
+            var accessToken = token.AccessToken;
+            DateTime? expiresAtUtc = (token.ExpiresInSeconds > 0)
+                ? DateTime.UtcNow.AddSeconds(token.ExpiresInSeconds)
+                : (DateTime?)null;
+
+            _log.LogInformation(
+                "ESU Callback: received long-lived token for biz={BusinessId}, expiresAt={ExpiresAt}",
+                businessId,
+                expiresAtUtc?.ToString("O") ?? "<none>");
+
+            await _tokens.UpsertAsync(
+                businessId,
+                Provider,
+                accessToken,
+                expiresAtUtc,
+                ct);
+
+            _log.LogDebug(
+                "ESU Callback: token upserted for biz={BusinessId}, provider={Provider}",
+                businessId,
+                Provider);
+
+            await _fbTokens.InvalidateAsync(businessId, ct);
+
+            var graphBase = _oauthOpts.Value.GraphBaseUrl?.TrimEnd('/') ?? "https://graph.facebook.com";
+            var graphVer = _oauthOpts.Value.GraphApiVersion?.Trim('/') ?? "v20.0";
+            var apiBase = $"{graphBase}/{graphVer}";
+
+            // 2) WABA DISCOVERY
+            string? wabaId = null;
+
+            try
+            {
+                var oauthCfg = _oauthOpts.Value;
+
+                if (!string.IsNullOrWhiteSpace(oauthCfg.AppId) &&
+                    !string.IsNullOrWhiteSpace(oauthCfg.AppSecret))
+                {
+                    var viaDebug = await TryGetWabaFromDebugTokenAsync(
+                        graphBase,
+                        accessToken,
+                        oauthCfg.AppId,
+                        oauthCfg.AppSecret,
+                        ct);
+
+                    if (!string.IsNullOrWhiteSpace(viaDebug))
+                    {
+                        wabaId = viaDebug;
+                        _log.LogInformation(
+                            "ESU Callback: WABA discovered via debug_token: {WabaId} (biz={BusinessId})",
+                            wabaId,
+                            businessId);
+                    }
+                    else
+                    {
+                        _log.LogWarning(
+                            "ESU Callback: debug_token did not yield WABA for biz={BusinessId}",
+                            businessId);
+                    }
+                }
+                else
+                {
+                    _log.LogWarning(
+                        "ESU Callback: AppId/AppSecret missing in FacebookOauthOptions, skipping debug_token WABA discovery (biz={BusinessId})",
+                        businessId);
+                }
+
+                if (string.IsNullOrWhiteSpace(wabaId))
+                {
+                    wabaId = await TryGetWabaFromMeAccountsAsync(apiBase, accessToken, ct);
+                    if (!string.IsNullOrWhiteSpace(wabaId))
+                    {
+                        _log.LogInformation(
+                            "ESU Callback: WABA discovered via /me/whatsapp_business_accounts: {WabaId} (biz={BusinessId})",
+                            wabaId,
+                            businessId);
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(wabaId))
+                {
+                    wabaId = await TryGetWabaFromBusinessesAsync(apiBase, accessToken, ct);
+                    if (!string.IsNullOrWhiteSpace(wabaId))
+                    {
+                        _log.LogInformation(
+                            "ESU Callback: WABA discovered via /me/businesses: {WabaId} (biz={BusinessId})",
+                            wabaId,
+                            businessId);
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(wabaId))
+                {
+                    _log.LogWarning(
+                        "ESU Callback: No WABA discovered for biz={BusinessId}. Token scopes or ESU config may be incomplete.",
+                        businessId);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex,
+                    "ESU Callback: Error during WABA discovery for biz={BusinessId}",
+                    businessId);
+            }
+
+            // 3) SAVE GLOBAL SETTINGS
+            try
+            {
+                var dto = new SaveWhatsAppSettingDto
+                {
+                    BusinessId = businessId,
+                    Provider = Provider,
+                    ApiUrl = apiBase,
+                    ApiKey = accessToken,
+                    WabaId = string.IsNullOrWhiteSpace(wabaId) ? null : wabaId,
+                    SenderDisplayName = null,
+                    WebhookSecret = null,
+                    WebhookVerifyToken = null,
+                    WebhookCallbackUrl = null,
+                    IsActive = true
+                };
+
+                _log.LogDebug(
+                    "ESU Callback: Saving WhatsApp settings for biz={BusinessId}: Provider={Provider}, ApiUrl={ApiUrl}, HasToken={HasToken}, WabaId={WabaId}",
+                    businessId,
+                    dto.Provider,
+                    dto.ApiUrl,
+                    !string.IsNullOrWhiteSpace(dto.ApiKey),
+                    dto.WabaId ?? "<none>");
+
+                await _waSettings.SaveOrUpdateSettingAsync(dto);
+
+                _log.LogInformation(
+                    "ESU Callback: Global WhatsApp settings saved for biz={BusinessId}, provider={Provider}, hasWaba={HasWaba}",
+                    businessId,
+                    Provider,
+                    !string.IsNullOrWhiteSpace(wabaId));
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex,
+                    "ESU Callback: Failed to save WhatsApp settings for biz={BusinessId}",
+                    businessId);
+                // do NOT throw; ESU UI finished. FE will see missing config if save failed.
+            }
+
+            // 4) SYNC PHONE NUMBERS (best-effort, but logged)
+            try
+            {
+                var setting = await _waSettings.GetSettingsByBusinessIdAsync(businessId);
+                if (setting?.Provider?.Equals(Provider, StringComparison.OrdinalIgnoreCase) == true &&
+                    !string.IsNullOrWhiteSpace(setting.WabaId) &&
+                    !string.IsNullOrWhiteSpace(setting.ApiKey))
+                {
+                    _log.LogDebug(
+                        "ESU Callback: Starting phone sync for biz={BusinessId} using WabaId={WabaId}",
+                        businessId,
+                        setting.WabaId);
+
+                    var (added, updated, total) =
+                        await _waPhones.SyncFromProviderAsync(businessId, setting, Provider, ct);
+
+                    _log.LogInformation(
+                        "ESU Callback: Phone sync complete for biz={BusinessId}. Added={Added}, Updated={Updated}, Total={Total}",
+                        businessId, added, updated, total);
+                }
+                else
+                {
+                    _log.LogWarning(
+                        "ESU Callback: Skipping phone sync for biz={BusinessId} (provider={Provider}, WabaId={WabaId}, HasApiKey={HasKey})",
+                        businessId,
+                        setting?.Provider,
+                        setting?.WabaId ?? "<none>",
+                        !string.IsNullOrWhiteSpace(setting?.ApiKey));
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex,
+                    "ESU Callback: Error during phone sync for biz={BusinessId}",
+                    businessId);
+            }
+
+            // 5) FLAG AS COMPLETED
+            try
+            {
+                var payloadJson = JsonSerializer.Serialize(new
+                {
+                    completed = true,
+                    provider = Provider,
+                    expires_at_utc = expiresAtUtc
+                });
+
+                await _flagStore.UpsertAsync(
+                    businessId,
+                    key: "facebook.esu",
+                    value: "completed",
+                    jsonPayload: payloadJson,
+                    ct: ct);
+
+                _log.LogInformation(
+                    "ESU Callback: ESU completion flag set for biz={BusinessId}",
+                    businessId);
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex,
+                    "ESU Callback: Failed to write ESU completion flag for biz={BusinessId}",
+                    businessId);
+            }
+
+            // 6) FINAL REDIRECT
+            var returnUrl = TryGetReturnUrlFromState(state);
+            var redirectBase = string.IsNullOrWhiteSpace(returnUrl)
+                ? "/welcomepage"
+                : returnUrl!;
+            var redirect = redirectBase.Contains("?")
+                ? $"{redirectBase}&connected=1"
+                : $"{redirectBase}?connected=1";
+
+            _log.LogInformation(
+                "ESU Callback: Redirecting biz={BusinessId} to {Redirect}",
+                businessId,
+                redirect);
+
+            return new FacebookEsuCallbackResponseDto { RedirectTo = redirect };
+        }
+
+        // =======================
+        // DISCONNECT (unchanged semantics)
+        // =======================
+
+        public async Task DisconnectAsync(Guid businessId, CancellationToken ct = default)
+        {
+            if (businessId == Guid.Empty)
+                throw new ArgumentException("BusinessId is required.", nameof(businessId));
+
+            _log.LogInformation("ESU Disconnect: biz={BusinessId}", businessId);
+
+            // 0) Check current ESU status so we don't resurrect flags after a hard delete
+            bool hadEsuOrToken = false;
+
+            try
+            {
+                var status = await _esuStatus.GetStatusAsync(businessId, ct);
+
+                if (status is not null)
+                {
+                    hadEsuOrToken =
+                        status.Connected ||
+                        status.HasEsuFlag ||
+                        status.HasValidToken;
+                }
+            }
+            catch (Exception ex)
+            {
+                // If status lookup fails, be conservative and allow disconnect pipeline to run.
+                _log.LogWarning(ex,
+                    "ESU Disconnect: failed to read status for biz={BusinessId}; continuing with disconnect.",
+                    businessId);
+            }
+
+            // If there is no ESU flag, no valid token, no connection, treat as already clean.
+            // This is the case after a successful hard delete: do NOT recreate IntegrationFlags / EsuTokens.
+            if (!hadEsuOrToken)
+            {
+                _log.LogInformation(
+                    "ESU Disconnect: nothing to disconnect for biz={BusinessId} (no ESU flags/tokens/settings).",
+                    businessId);
+                return;
+            }
+
+            // 1) Remote revoke (best-effort)
+            try
+            {
+                var t = await _tokens.GetAsync(businessId, Provider, ct);
+                if (t is not null && !string.IsNullOrWhiteSpace(t.AccessToken) && !t.IsRevoked)
+                {
+                    var graphBase = _oauthOpts.Value.GraphBaseUrl?.TrimEnd('/') ?? "https://graph.facebook.com";
+                    var graphVer = _oauthOpts.Value.GraphApiVersion?.Trim('/') ?? "v20.0";
+                    var apiBase = $"{graphBase}/{graphVer}";
+
+                    using var http = new HttpClient();
+                    http.DefaultRequestHeaders.Authorization =
+                        new AuthenticationHeaderValue("Bearer", t.AccessToken);
+
+                    var resp = await http.DeleteAsync($"{apiBase}/me/permissions", ct);
+                    if (!resp.IsSuccessStatusCode)
+                    {
+                        _log.LogWarning(
+                            "ESU Disconnect: remote revoke returned {Status} for biz={BusinessId}",
+                            resp.StatusCode,
+                            businessId);
+                    }
+                    else
+                    {
+                        _log.LogInformation(
+                            "ESU Disconnect: remote revoke succeeded for biz={BusinessId}",
+                            businessId);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "ESU Disconnect: error during remote revoke for biz={BusinessId}",
+                    businessId);
+            }
+
+            // 2) Canonical local deauthorize (flags + EsuTokens + cache) via status service
+            try
+            {
+                await _esuStatus.DeauthorizeAsync(businessId, ct);
+
+                _log.LogInformation(
+                    "ESU Disconnect: local deauthorize completed for biz={BusinessId}",
+                    businessId);
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex,
+                    "ESU Disconnect: error during local deauthorize for biz={BusinessId}",
+                    businessId);
+            }
+
+            // 3) Deactivate WhatsApp settings for META_CLOUD
+            try
+            {
+                await _waSettings.SaveOrUpdateSettingAsync(new SaveWhatsAppSettingDto
+                {
+                    BusinessId = businessId,
+                    Provider = Provider,
+                    ApiUrl = null,
+                    ApiKey = null,
+                    WabaId = null,
+                    SenderDisplayName = null,
+                    WebhookSecret = null,
+                    WebhookVerifyToken = null,
+                    WebhookCallbackUrl = null,
+                    IsActive = false
+                });
+
+                _log.LogInformation(
+                    "ESU Disconnect: WhatsApp settings deactivated for biz={BusinessId}",
+                    businessId);
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex,
+                    "ESU Disconnect: error deactivating WhatsApp settings for biz={BusinessId}",
+                    businessId);
+            }
+
+            // 4) UX flag: mark as "disconnected" ONLY for businesses that previously had ESU/Token
+            try
+            {
+                await _flagStore.UpsertAsync(
+                    businessId,
+                    key: "facebook.esu",
+                    value: "disconnected",
+                    jsonPayload: "{\"completed\":false}",
+                    ct: ct);
+
+                _log.LogInformation(
+                    "ESU Disconnect: ESU flag updated to 'disconnected' for biz={BusinessId}",
+                    businessId);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "ESU Disconnect: failed to update ESU 'disconnected' flag for biz={BusinessId}",
+                    businessId);
+            }
+        }
+
+        // =======================
+        // HELPERS
+        // =======================
+
+        private static string CreateStateToken(Guid businessId, string? returnUrl)
+        {
+            Span<byte> random = stackalloc byte[16];
+            RandomNumberGenerator.Fill(random);
+            var payload =
+                $"{businessId:N}|{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}|{Convert.ToHexString(random)}|{(returnUrl ?? "")}";
+            var bytes = System.Text.Encoding.UTF8.GetBytes(payload);
+            return WebEncoders.Base64UrlEncode(bytes);
+        }
+
+        private static string? TryGetReturnUrlFromState(string state)
+        {
+            try
+            {
+                var bytes = WebEncoders.Base64UrlDecode(state);
+                var payload = System.Text.Encoding.UTF8.GetString(bytes);
+                var parts = payload.Split('|', 4, StringSplitOptions.None);
+                if (parts.Length == 4)
+                {
+                    var url = parts[3];
+                    return string.IsNullOrWhiteSpace(url) ? null : url;
+                }
+            }
+            catch
+            {
+                // ignore malformed state
+            }
+            return null;
+        }
+
+        private async Task<string?> TryGetWabaFromDebugTokenAsync(
+            string graphBase,
+            string inputToken,
+            string appId,
+            string appSecret,
+            CancellationToken ct)
+        {
+            try
+            {
+                var appToken = $"{appId}|{appSecret}";
+                var url = $"{graphBase.TrimEnd('/')}/debug_token" +
+                          $"?input_token={Uri.EscapeDataString(inputToken)}" +
+                          $"&access_token={Uri.EscapeDataString(appToken)}";
+
+                using var http = new HttpClient();
+                var json = await http.GetStringAsync(url, ct);
+
+                _log.LogDebug("ESU debug_token raw={Body}", Truncate(json));
+
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (!root.TryGetProperty("data", out var data)) return null;
+
+                if (data.TryGetProperty("granular_scopes", out var scopes) &&
+                    scopes.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var s in scopes.EnumerateArray())
+                    {
+                        var scope = s.TryGetProperty("scope", out var se) ? se.GetString() : null;
+                        if (string.IsNullOrWhiteSpace(scope)) continue;
+
+                        if (scope.StartsWith("whatsapp_business_", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (s.TryGetProperty("target_ids", out var targets) &&
+                                targets.ValueKind == JsonValueKind.Array)
+                            {
+                                foreach (var t in targets.EnumerateArray())
+                                {
+                                    var id = t.GetString();
+                                    if (!string.IsNullOrWhiteSpace(id))
+                                        return id;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "ESU debug_token WABA discovery failed.");
+                return null;
+            }
+        }
+
+        private async Task<string?> TryGetWabaFromMeAccountsAsync(
+            string apiBase,
+            string accessToken,
+            CancellationToken ct)
+        {
+            var url = $"{apiBase}/me/whatsapp_business_accounts?fields=id,name";
+            using var http = new HttpClient();
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+            var res = await http.GetAsync(url, ct);
+            var body = await res.Content.ReadAsStringAsync(ct);
+
+            _log.LogDebug("ESU me/whatsapp_business_accounts: {Status} {Body}",
+                (int)res.StatusCode,
+                Truncate(body));
+
+            if (!res.IsSuccessStatusCode) return null;
+
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("data", out var arr) || arr.ValueKind != JsonValueKind.Array)
+                return null;
+
+            foreach (var it in arr.EnumerateArray())
+            {
+                if (it.TryGetProperty("id", out var idp))
+                {
+                    var id = idp.GetString();
+                    if (!string.IsNullOrWhiteSpace(id))
+                        return id;
+                }
+            }
+
+            return null;
+        }
+
+        private async Task<string?> TryGetWabaFromBusinessesAsync(
+            string apiBase,
+            string accessToken,
+            CancellationToken ct)
+        {
+            var url =
+                $"{apiBase}/me/businesses?fields=owned_whatsapp_business_accounts{{id}},client_whatsapp_business_accounts{{id}}";
+
+            using var http = new HttpClient();
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+            var res = await http.GetAsync(url, ct);
+            var body = await res.Content.ReadAsStringAsync(ct);
+
+            _log.LogDebug("ESU me/businesses: {Status} {Body}",
+                (int)res.StatusCode,
+                Truncate(body));
+
+            if (!res.IsSuccessStatusCode) return null;
+
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+
+            if (!root.TryGetProperty("data", out var arr) || arr.ValueKind != JsonValueKind.Array)
+                return null;
+
+            foreach (var biz in arr.EnumerateArray())
+            {
+                if (TryPickWabaId(biz, "owned_whatsapp_business_accounts", out var ow) &&
+                    !string.IsNullOrWhiteSpace(ow))
+                    return ow;
+
+                if (TryPickWabaId(biz, "client_whatsapp_business_accounts", out var cl) &&
+                    !string.IsNullOrWhiteSpace(cl))
+                    return cl;
+            }
+
+            return null;
+        }
+
+        private static string Truncate(string? s, int max = 600)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return string.Empty;
+            s = s.Replace("\r", " ").Replace("\n", " ");
+            return s.Length <= max ? s : s[..max] + "...";
+        }
+
+        private static bool TryPickWabaId(JsonElement biz, string prop, out string? wabaId)
+        {
+            wabaId = null;
+            if (!biz.TryGetProperty(prop, out var block)) return false;
+            if (!block.TryGetProperty("data", out var arr) || arr.ValueKind != JsonValueKind.Array) return false;
+
+            foreach (var it in arr.EnumerateArray())
+            {
+                if (it.TryGetProperty("id", out var idp))
+                {
+                    wabaId = idp.GetString();
+                    if (!string.IsNullOrWhiteSpace(wabaId))
+                        return true;
+                }
+            }
+
+            return false;
+        }
+
+
+        public async Task FullDeleteAsync(Guid businessId, CancellationToken ct = default)
+        {
+            if (businessId == Guid.Empty)
+                throw new ArgumentException("BusinessId is required.", nameof(businessId));
+
+            _log.LogInformation("ESU FullDelete: start for biz={BusinessId}", businessId);
+
+            // 1) Run normal disconnect pipeline (best-effort)
+            try
+            {
+                await DisconnectAsync(businessId, ct);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "ESU FullDelete: DisconnectAsync failed or partial for biz={BusinessId}. Continuing with local cleanup.",
+                    businessId);
+            }
+
+            // 2) Delete ESU tokens for this business/provider
+            try
+            {
+                await _tokens.DeleteAsync(businessId, Provider, ct);
+
+                _log.LogInformation(
+                    "ESU FullDelete: EsuTokens deleted for biz={BusinessId}",
+                    businessId);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "ESU FullDelete: failed to delete EsuTokens for biz={BusinessId}",
+                    businessId);
+            }
+
+            // 3) Delete WhatsApp settings (already in your code)
+            try
+            {
+                var deleted = await _waSettings.DeleteSettingsAsync(businessId);
+                _log.LogInformation(
+                    "ESU FullDelete: WhatsApp settings delete={Deleted} for biz={BusinessId}",
+                    deleted,
+                    businessId);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "ESU FullDelete: failed to delete WhatsApp settings for biz={BusinessId}",
+                    businessId);
+            }
+
+            // 4) Delete WhatsApp phone numbers
+            try
+            {
+                var numbers = await _waPhones.ListAsync(businessId, Provider, ct);
+                foreach (var n in numbers)
+                {
+                    await _waPhones.DeleteAsync(businessId, Provider, n.Id);
+                }
+
+                _log.LogInformation(
+                    "ESU FullDelete: {Count} WhatsApp phone numbers deleted for biz={BusinessId}",
+                    numbers.Count,
+                    businessId);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "ESU FullDelete: failed to delete WhatsApp phone numbers for biz={BusinessId}",
+                    businessId);
+            }
+
+            // 5) Delete IntegrationFlags row so /status can never say ESU connected
+            try
+            {
+                await _flagStore.DeleteAsync(businessId, ct);
+
+                _log.LogInformation(
+                    "ESU FullDelete: IntegrationFlags row deleted for biz={BusinessId}",
+                    businessId);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "ESU FullDelete: failed to delete IntegrationFlags for biz={BusinessId}",
+                    businessId);
+            }
+
+            // 6) Also nuke any cached token/status
+            try
+            {
+                await _fbTokens.InvalidateAsync(businessId, ct);
+            }
+            catch (Exception ex)
+            {
+                _log.LogDebug(ex,
+                    "ESU FullDelete: token cache invalidate failed for biz={BusinessId}",
+                    businessId);
+            }
+
+            _log.LogInformation("ESU FullDelete: completed for biz={BusinessId}", businessId);
+        }
+
+    }
+}
+
+
+

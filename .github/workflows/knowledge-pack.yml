@@ -1,0 +1,28 @@
+name: Build Knowledge Pack
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # allow the workflow to commit generated files
+
+jobs:
+  build-pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build pack (PowerShell)
+        shell: pwsh
+        run: ./tools/Build-KnowledgePack.ps1 -RepoRoot .
+
+      - name: Commit updated docs
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A docs/pack
+          git add docs/xbc-knowledge-pack.json docs/.nojekyll docs/pack/.nojekyll || true
+          git commit -m "chore(docs): update split knowledge pack" || echo "No changes"
+          git push

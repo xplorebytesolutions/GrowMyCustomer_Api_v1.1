@@ -1,0 +1,48 @@
+{
+  "name": "xbytechat-api/Features/PlanManagement",
+  "generatedAt": "2025-09-12 10:33:04 +00:00",
+  "files": [
+    {
+      "path": "xbytechat-api/Features/PlanManagement/extract_all.bat",
+      "sha256": "e15d73a156320cb7235895198a4cd732b5731cda51944f0dfe4e1da83d1e2d5e",
+      "language": "bat",
+      "size": 731,
+      "content": "@echo off\nREM This script will find all files and output their name and content into one file.\n\nset \"outputFile=All_Content.txt\"\n\nREM Clear the output file to start fresh\n> \"%outputFile%\" (echo Folder and File Content Report)\necho. >> \"%outputFile%\"\n\nREM Loop through all files in the current directory and subdirectories\nfor /R . %%F in (*.*) do (\n    echo ====================================================== >> \"%outputFile%\"\n    echo FILE: %%F >> \"%outputFile%\"\n    echo ====================================================== >> \"%outputFile%\"\n    echo. >> \"%outputFile%\"\n    type \"%%F\" >> \"%outputFile%\"\n    echo. >> \"%outputFile%\"\n    echo. >> \"%outputFile%\"\n)\n\necho Finished! All content has been extracted to %outputFile%"
+    },
+    {
+      "path": "xbytechat-api/Features/PlanManagement/Models/BusinessPlanInfo.cs",
+      "sha256": "4a8d4603750b0630eec386cbb831948aaa2cc2f5872d4e1b178da2b9a6952bc7",
+      "language": "csharp",
+      "size": 1240,
+      "content": "using System;\nusing System.ComponentModel.DataAnnotations;\nusing System.ComponentModel.DataAnnotations.Schema;\nusing xbytechat.api.Features.BusinessModule.Models;\nusing xbytechat.api.Features.PlanManagement.Models;\n\nnamespace xbytechat.api.Models.BusinessModel\n{\n    public class BusinessPlanInfo\n    {\n        [Key]\n        public Guid Id { get; set; } = Guid.NewGuid();\n\n        // 🔗 Foreign key to Business\n        [Required]\n        public Guid BusinessId { get; set; }\n\n        [ForeignKey(nameof(BusinessId))]\n        public Business Business { get; set; }\n\n        // 📦 Plan Management\n        [Required]\n        public PlanType Plan { get; set; } = PlanType.Trial; // Default Trial\n\n        [Required]\n        public int TotalMonthlyQuota { get; set; } = 100; // Default Trial Messages\n\n        [Required]\n        public int RemainingMessages { get; set; } = 100;\n\n        public DateTime QuotaResetDate { get; set; } = DateTime.UtcNow.AddMonths(1);\n\n        // 💰 Wallet Management (optional)\n        public decimal WalletBalance { get; set; } = 0.00m;\n\n        // 📅 Timestamps\n        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;\n        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Features/PlanManagement/Models/PlanFeature.cs",
+      "sha256": "af8483d1a28e7555f8111b552d2730fd4ef167d9ba562bebb508328248b01a12",
+      "language": "csharp",
+      "size": 687,
+      "content": "using System;\nusing System.ComponentModel.DataAnnotations;\nusing System.ComponentModel.DataAnnotations.Schema;\n\nnamespace xbytechat.api.Features.PlanManagement.Models\n{\n    [Table(\"PlanFeatureMatrix\")]\n    public class PlanFeatureMatrix\n    {\n        [Key]\n        public Guid Id { get; set; }\n\n        [Required]\n        [MaxLength(20)]\n        public string PlanName { get; set; } = string.Empty;  // \"Basic\", \"Smart\", \"Advance\"\n\n        [Required]\n        [MaxLength(50)]\n        public string FeatureName { get; set; } = string.Empty; // \"Contacts\", \"Catalog\", etc.\n\n        [Required]\n        public bool IsEnabled { get; set; }  // Default state for this plan-feature pair\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Features/PlanManagement/Models/PlanType.cs",
+      "sha256": "52170542c11ff0a0e52b9f16289446106038cd266cd602169980aa1d684672ea",
+      "language": "csharp",
+      "size": 187,
+      "content": "namespace xbytechat.api.Features.PlanManagement.Models\n{\n    public enum PlanType\n    {\n       \n        Basic = 0,\n        Smart = 1,\n        Advanced = 2,\n            Trial = 3,\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Features/PlanManagement/Services/IPlanManager.cs",
+      "sha256": "69cb77d9f587d971ee0cc96bf3fa399d9982294045981db84e714050dc242d85",
+      "language": "csharp",
+      "size": 418,
+      "content": "using xbytechat.api.Helpers;\nusing xbytechat.api.Shared;\n\nnamespace xbytechat.api.Features.PlanManagement.Services\n{\n    public interface IPlanManager\n    {\n        /// <summary>\n        /// Checks if business has enough quota to send a message.\n        /// </summary>\n        Task<ResponseResult> CheckQuotaBeforeSendingAsync(Guid businessId);\n        Dictionary<string, bool> GetPlanFeatureMap(string plan);\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Features/PlanManagement/Services/PlanManager.cs",
+      "sha256": "0d93116ee8bd77194569c6739adad49911359cad9bd6f1919bae85f130027871",
+      "language": "csharp",
+      "size": 1992,
+      "content": "using Microsoft.EntityFrameworkCore;\nusing xbytechat.api.Features.PlanManagement.Models;\nusing xbytechat.api.Helpers;\nusing xbytechat.api.Models.BusinessModel;\nusing xbytechat.api.Shared;\n\nnamespace xbytechat.api.Features.PlanManagement.Services\n{\n    public class PlanManager : IPlanManager\n    {\n        private readonly AppDbContext _db;\n\n        public PlanManager(AppDbContext db)\n        {\n            _db = db;\n        }\n\n        public async Task<ResponseResult> CheckQuotaBeforeSendingAsync(Guid businessId)\n        {\n            var business = await _db.Businesses.FirstOrDefaultAsync(b => b.Id == businessId);\n\n            if (business == null)\n                return ResponseResult.ErrorInfo(\"Business not found.\", \"Invalid business ID\");\n            if (business?.BusinessPlanInfo?.RemainingMessages <= 0)\n            {\n                var msg = business?.BusinessPlanInfo?.Plan == PlanType.Trial\n                    ? \"Trial limit reached. Please upgrade your plan.\"\n                    : \"Monthly quota exhausted. Please upgrade or wait for reset.\";\n\n                return ResponseResult.ErrorInfo(msg, \"Quota limit exceeded\");\n            }\n\n            return ResponseResult.SuccessInfo(\"Quota check passed.\");\n        }\n\n        public Dictionary<string, bool> GetPlanFeatureMap(string plan)\n        {\n            // Example map — replace with real logic if needed\n            if (plan == \"Basic\")\n                return new Dictionary<string, bool>\n            {\n                { \"CATALOG\", true },\n                { \"MESSAGE_SEND\", false },\n                { \"CRM_NOTES\", false }\n            };\n\n            if (plan == \"Advanced\")\n                return new Dictionary<string, bool>\n            {\n                { \"CATALOG\", true },\n                { \"MESSAGE_SEND\", true },\n                { \"CRM_NOTES\", true },\n                { \"CRM_TAGS\", true }\n            };\n\n            // Fallback plan\n            return new Dictionary<string, bool>();\n        }\n\n    }\n}\n"
+    }
+  ]
+}

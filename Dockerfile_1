@@ -1,0 +1,25 @@
+# ---- Build (SDK) ----
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+
+# copy csproj first for caching
+COPY xbytechat-api/xbytechat.api.csproj xbytechat-api/
+RUN dotnet restore xbytechat-api/xbytechat.api.csproj
+
+# copy the rest and publish
+COPY . .
+RUN dotnet publish xbytechat-api/xbytechat.api.csproj -c Release -o /app/publish --no-restore /p:UseAppHost=false
+
+# ---- Runtime (ASP.NET Core 8) ----
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS final
+WORKDIR /app
+COPY --from=build /app/publish ./
+
+# bind to 8080 (non-root safe)
+ENV ASPNETCORE_URLS=http://+:8080
+EXPOSE 8080
+
+# (optional but recommended behind proxies)
+# RUN apt-get update && apt-get install -y --no-install-recommends libicu-dev && rm -rf /var/lib/apt/lists/*
+
+ENTRYPOINT ["dotnet", "xbytechat.api.dll"]

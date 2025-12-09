@@ -1,0 +1,76 @@
+{
+  "name": "xbytechat-api/Shared",
+  "generatedAt": "2025-09-12 10:33:04 +00:00",
+  "files": [
+    {
+      "path": "xbytechat-api/Shared/AutoMapperProfile.cs",
+      "sha256": "989f0b9b654be427f90cea952c56afc87d0c6b647e71bae60f9694b4e21bacf2",
+      "language": "csharp",
+      "size": 708,
+      "content": "using AutoMapper;\nusing xbytechat.api.CRM.Dtos;\nusing xbytechat.api.CRM.Models;\nusing xbytechat.api.Features.CampaignModule.DTOs;\nusing xbytechat.api.Features.CampaignModule.Models;\nusing xbytechat.api.DTOs.Messages;\nusing xbytechat.api.Features.Tracking.DTOs;\nusing xbytechat.api.Features.Tracking.Models;\nusing xbytechat.api.Features.MessageManagement.DTOs;\n\nnamespace xbytechat.api.Shared\n{\n    public class AutoMapperProfile : Profile\n    {\n        public AutoMapperProfile()\n        {\n            CreateMap<Contact, ContactDto>();\n            CreateMap<Campaign, CampaignDto>();\n            CreateMap<MessageLog, MessageLogDto>();\n            CreateMap<TrackingLog, TrackingLogDto>();\n        }\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Shared/BusinessControllerBase.cs",
+      "sha256": "ae04266e74cbbdfb58a81d85d24db83b9151ebef9e42b000430e8853ac2aa32f",
+      "language": "csharp",
+      "size": 343,
+      "content": "using System;\nusing Microsoft.AspNetCore.Mvc;\n\nnamespace xbytechat.api.Shared\n{\n    // Do NOT add [ApiController] here; keep it on concrete controllers.\n    public abstract class BusinessControllerBase : ControllerBase\n    {\n        protected Guid BusinessId => User.GetBusinessId();\n        protected Guid UserId => User.GetUserId();\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Shared/ClaimsBusinessDetails.cs",
+      "sha256": "c2e6949a61ef96fc2c06636f297b8d8d033f3f29fa5d7b57230743db945ed0a2",
+      "language": "csharp",
+      "size": 939,
+      "content": "using System;\nusing System.Security.Claims;\n\nnamespace xbytechat.api.Shared\n{\n    public static class ClaimsBusinessDetails\n    {\n        public static Guid GetBusinessId(this ClaimsPrincipal user)\n        {\n            var businessIdClaim = user.FindFirst(\"businessId\")?.Value; // lowercase only!\n            if (string.IsNullOrEmpty(businessIdClaim) || !Guid.TryParse(businessIdClaim, out var businessId))\n                throw new UnauthorizedAccessException(\"Invalid or missing businessId in token.\");\n            return businessId;\n        }\n\n        public static Guid GetUserId(this ClaimsPrincipal user)\n        {\n            var userIdClaim = user.FindFirst(ClaimTypes.NameIdentifier)?.Value;\n            if (string.IsNullOrEmpty(userIdClaim) || !Guid.TryParse(userIdClaim, out var userId))\n                throw new UnauthorizedAccessException(\"Invalid or missing userId in token.\");\n            return userId;\n        }\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Shared/ClaimsPrincipalExtensions.cs",
+      "sha256": "aceea513e3338cb16f3558e4dea2d6cafd833f7786da41a6c718b9b2c7294670",
+      "language": "csharp",
+      "size": 90,
+      "content": "namespace xbytechat.api.Shared\n{\n    public class ClaimsPrincipalExtensions\n    {\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Shared/PaginatedRequest.cs",
+      "sha256": "af6fceb743c7fcb6bbb984e08b2bb8e696a447e38e61b6fc85a7b9dd48a0fb04",
+      "language": "csharp",
+      "size": 363,
+      "content": "namespace xbytechat.api.Shared\n{\n    public class PaginatedRequest\n    {\n        public int Page { get; set; } = 1;       // Page number (1-based)\n        public int PageSize { get; set; } = 10;  // Items per page\n\n        // Optional filter (can be extended later)\n        public string? Status { get; set; }\n        public string? Search { get; set; }\n    }\n}\n\n"
+    },
+    {
+      "path": "xbytechat-api/Shared/PaginatedResponse.cs",
+      "sha256": "d59aca9b4129006df5c4ec39b4e6793672e9493f4581e7963b6c215465d1b113",
+      "language": "csharp",
+      "size": 296,
+      "content": "using System.Collections.Generic;\n\nnamespace xbytechat.api.Shared\n{\n    public class PaginatedResponse<T>\n    {\n        public List<T> Items { get; set; } = new();\n        public int TotalCount { get; set; }\n        public int Page { get; set; }\n        public int PageSize { get; set; }\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Shared/TrackingUtils/DeviceHelper.cs",
+      "sha256": "70ad5b3deb3b07358a3ce61a514b3a9c3f4bb78007752bd0f4106ef8a3f27b32",
+      "language": "csharp",
+      "size": 748,
+      "content": "// File: Features/CTATracking/Utils/DeviceHelper.cs\n\nnamespace xbytechat.api.Shared.TrackingUtils\n{\n    public static class DeviceHelper\n    {\n        public static string GetDeviceType(string userAgent)\n        {\n            if (string.IsNullOrEmpty(userAgent)) return \"Unknown\";\n\n            userAgent = userAgent.ToLower();\n\n            if (userAgent.Contains(\"mobile\") || userAgent.Contains(\"android\") || userAgent.Contains(\"iphone\"))\n                return \"Mobile\";\n\n            if (userAgent.Contains(\"ipad\") || userAgent.Contains(\"tablet\"))\n                return \"Tablet\";\n\n            if (userAgent.Contains(\"windows\") || userAgent.Contains(\"macintosh\"))\n                return \"Desktop\";\n\n            return \"Unknown\";\n        }\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Shared/TrackingUtils/GeoHelper.cs",
+      "sha256": "359da4b5f8939751d00d9137b41774e466af302ccaf60e203c1b0f0827a9eafd",
+      "language": "csharp",
+      "size": 952,
+      "content": "// File: Features/CTATracking/Utils/GeoHelper.cs\n\nusing System.Net.Http;\nusing System.Text.Json;\nusing System.Threading.Tasks;\n\nnamespace xbytechat.api.Shared.TrackingUtils\n{\n    public static class GeoHelper\n    {\n        public static async Task<string> GetCountryFromIP(string ipAddress)\n        {\n            try\n            {\n                if (string.IsNullOrWhiteSpace(ipAddress) || ipAddress == \"::1\")\n                    return \"Localhost\";\n\n                using var client = new HttpClient();\n                var response = await client.GetStringAsync($\"https://ipapi.co/{ipAddress}/json/\");\n\n                var doc = JsonDocument.Parse(response);\n                if (doc.RootElement.TryGetProperty(\"country_name\", out var countryProp))\n                    return countryProp.GetString() ?? \"Unknown\";\n            }\n            catch\n            {\n                // fallback\n            }\n\n            return \"Unknown\";\n        }\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Shared/TrackingUtils/TrackingUrlBuilder.cs",
+      "sha256": "d944abb54aa2863bcad184f9d8bbd42d683f5d0b0b07474ea3f26903e7cc13d5",
+      "language": "csharp",
+      "size": 1370,
+      "content": "using System;\nusing System.Web;\n\nnamespace xbytechat.api.Shared.TrackingUtils\n{\n    public static class TrackingUrlBuilder\n    {\n        public static string BuildTrackingUrl(\n            Guid businessId,\n            string sourceType,\n            Guid sourceId,\n            string buttonText,\n            string redirectUrl,\n            Guid? messageId = null,\n            Guid? contactId = null,\n            string contactPhone = null,\n            string sessionId = null,\n            string threadId = null)\n        {\n            var query = HttpUtility.ParseQueryString(string.Empty);\n            query[\"src\"] = sourceType;\n            query[\"id\"] = sourceId.ToString();\n            query[\"btn\"] = buttonText;\n            query[\"to\"] = redirectUrl;\n            query[\"type\"] = buttonText;\n            if (messageId != null) query[\"msg\"] = messageId.ToString();\n            if (contactId != null) query[\"contact\"] = contactId.ToString();\n            if (!string.IsNullOrEmpty(contactPhone)) query[\"phone\"] = contactPhone;\n            if (!string.IsNullOrEmpty(sessionId)) query[\"session\"] = sessionId;\n            if (!string.IsNullOrEmpty(threadId)) query[\"thread\"] = threadId;\n\n            var baseUrl = Environment.GetEnvironmentVariable(\"API_BASE_URL\") ?? \"https://yourdomain.com\";\n            return $\"{baseUrl}/api/tracking/redirect?{query}\";\n        }\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Shared/utility/TemplateParameterHelper.cs",
+      "sha256": "51753bdf8ce7b9964913d5a501bee92803cf58d23cc315def80b8c69561dfbe1",
+      "language": "csharp",
+      "size": 1252,
+      "content": "using Newtonsoft.Json;\nusing System.Text.RegularExpressions;\n\nnamespace xbytechat.api.Shared.utility\n{\n    public static class TemplateParameterHelper\n    {\n        // ✅ Used when parsing stored JSON parameters\n        public static List<string> ParseTemplateParams(string? jsonString)\n        {\n            if (string.IsNullOrWhiteSpace(jsonString)) return new List<string>();\n            try\n            {\n                return JsonConvert.DeserializeObject<List<string>>(jsonString) ?? new List<string>();\n            }\n            catch\n            {\n                return new List<string>();\n            }\n        }\n\n        // ✅ NEW: Fills {{1}}, {{2}} with parameter values\n        public static string FillPlaceholders(string template, List<string> parameters)\n        {\n            if (string.IsNullOrWhiteSpace(template) || parameters == null || parameters.Count == 0)\n                return template;\n\n            // Replace {{1}}, {{2}} ... with values\n            return Regex.Replace(template, @\"\\{\\{(\\d+)\\}\\}\", match =>\n            {\n                var index = int.Parse(match.Groups[1].Value) - 1;\n                return index >= 0 && index < parameters.Count ? parameters[index] : match.Value;\n            });\n        }\n    }\n}\n"
+    }
+  ]
+}

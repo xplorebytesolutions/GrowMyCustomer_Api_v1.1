@@ -1,0 +1,20 @@
+{
+  "name": "xbytechat-api/Features/WhatsAppIntegration",
+  "generatedAt": "2025-09-12 10:33:04 +00:00",
+  "files": [
+    {
+      "path": "xbytechat-api/Features/WhatsAppIntegration/Controllers/WhatsAppTemplateController.cs",
+      "sha256": "7cee6e94d95a99b2c7b15eb9567b21bea75fb9efd058d6c2a00fba7585616dc8",
+      "language": "csharp",
+      "size": 2867,
+      "content": "\nusing Microsoft.AspNetCore.Mvc;\nusing Microsoft.Extensions.Configuration;\nusing System.Net.Http;\nusing System.Threading.Tasks;\nusing Newtonsoft.Json;\nusing System.Net.Http.Headers;\nusing Newtonsoft.Json.Linq;\n\nnamespace xbytechat.api.Features.WhatsAppIntegration.Controllers\n{\n    [ApiController]\n    [Route(\"api/whatsapp\")]\n    public class WhatsAppTemplateController : ControllerBase\n    {\n        private readonly IConfiguration _config;\n\n        public WhatsAppTemplateController(IConfiguration config)\n        {\n            _config = config;\n        }\n\n        [HttpGet]\n        public async Task<IActionResult> GetTemplates()\n        {\n            var wabaId = _config[\"WhatsApp:WABA_ID\"];\n            var apiToken = _config[\"WhatsApp:apiToken\"];\n            var url = $\"https://graph.facebook.com/v22.0/{wabaId}/message_templates\";\n\n            using var client = new HttpClient();\n            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(\"Bearer\", apiToken);\n\n            try\n            {\n                var response = await client.GetAsync(url);\n                var json = await response.Content.ReadAsStringAsync();\n\n                if (!response.IsSuccessStatusCode)\n                    return StatusCode((int)response.StatusCode, new { success = false, error = json });\n\n                var root = JsonConvert.DeserializeObject<JObject>(json);\n                var templatesRaw = root[\"data\"] as JArray;\n\n                if (templatesRaw == null)\n                    return BadRequest(new { success = false, error = \"Meta API did not return data array.\" });\n\n                var templates = new List<object>();\n\n                foreach (var tpl in templatesRaw)\n                {\n                    string name = tpl[\"name\"]?.ToString() ?? \"\";\n                    string language = tpl[\"language\"]?.ToString() ?? \"en_US\";\n\n                    string bodyText = \"\";\n                    var components = tpl[\"components\"] as JArray;\n\n                    if (components != null)\n                    {\n                        foreach (var comp in components)\n                        {\n                            if (comp[\"type\"]?.ToString() == \"BODY\")\n                            {\n                                bodyText = comp[\"text\"]?.ToString() ?? \"\";\n                                break;\n                            }\n                        }\n                    }\n\n                    templates.Add(new\n                    {\n                        name,\n                        language,\n                        body = bodyText\n                    });\n                }\n\n                return Ok(new { success = true, templates });\n            }\n            catch (Exception ex)\n            {\n                return StatusCode(500, new { success = false, error = ex.Message });\n            }\n        }\n\n    }\n}\n\n\n"
+    },
+    {
+      "path": "xbytechat-api/Features/WhatsAppIntegration/DTOs/WhatsAppTemplateDto.cs",
+      "sha256": "66133a62d929f35f6f56d4d6c3c9a872e14788627c9645fa41aa6eee13290993",
+      "language": "csharp",
+      "size": 111,
+      "content": "namespace xbytechat.api.Features.WhatsAppIntegration.DTOs\n{\n    public class WhatsAppTemplateDto\n    {\n    }\n}\n"
+    }
+  ]
+}

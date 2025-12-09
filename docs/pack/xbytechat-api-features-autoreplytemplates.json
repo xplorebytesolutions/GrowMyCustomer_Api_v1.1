@@ -1,0 +1,13 @@
+{
+  "name": "xbytechat-api/Features/AutoReplyTemplates",
+  "generatedAt": "2025-09-12 10:33:04 +00:00",
+  "files": [
+    {
+      "path": "xbytechat-api/Features/AutoReplyTemplates/Restaurant/Configs/MenuNodeConfig.cs",
+      "sha256": "f20da12fb12eed3191a2998cb2e7a7dbc65b03bfcb571cf1b6a413f52d78d42a",
+      "language": "csharp",
+      "size": 527,
+      "content": "namespace xbytechat.api.Features.AutoReplyTemplates.Restaurant.Configs\n{\n    public class MenuNodeConfig\n    {\n        public string MenuTitle { get; set; } = string.Empty;         // e.g., \"Today's Specials\"\n        public string Description { get; set; } = string.Empty;       // e.g., \"Lunch combos starting at ₹199\"\n        public string MenuImageUrl { get; set; } = string.Empty;      // CDN or public link\n        public string MenuDownloadUrl { get; set; } = string.Empty;   // PDF link or product catalog URL\n    }\n}\n"
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "name": "xbytechat-api/Features/ReportingModule",
+  "generatedAt": "2025-09-12 10:33:04 +00:00",
+  "files": [
+    {
+      "path": "xbytechat-api/Features/ReportingModule/Controllers/MessageAnalyticsController.cs",
+      "sha256": "99dc4aa00c1bae7339a4b7cf1c00c7946b5aebeb41f493a46adb22e6d15af298",
+      "language": "csharp",
+      "size": 1238,
+      "content": "using Microsoft.AspNetCore.Authorization;\nusing Microsoft.AspNetCore.Mvc;\nusing xbytechat.api.Features.ReportingModule.Services;\nusing xbytechat.api.Shared;\n\nnamespace xbytechat.api.Features.ReportingModule.Controllers\n{\n    [ApiController]\n    [Authorize] // ✅ add this\n    [Route(\"api/reporting/messages\")]\n    public class MessageAnalyticsController : ControllerBase\n    {\n        private readonly IMessageAnalyticsService _service;\n\n        public MessageAnalyticsController(IMessageAnalyticsService service)\n        {\n            _service = service;\n        }\n\n        [HttpGet(\"recent\")]\n        public async Task<IActionResult> GetRecentLogs([FromQuery] int limit = 20)\n        {\n            var businessId = User.GetBusinessId();\n            var logs = await _service.GetRecentLogsAsync(businessId, limit);\n            return Ok(new { success = true, data = logs });\n        }\n\n        [HttpGet(\"history\")]\n        public async Task<IActionResult> GetPaginatedLogs([FromQuery] PaginatedRequest request)\n        {\n            var businessId = User.GetBusinessId();\n            var result = await _service.GetPaginatedLogsAsync(businessId, request);\n            return Ok(new { success = true, data = result });\n        }\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Features/ReportingModule/DTOs/DirectMessageLogFilterDto.cs",
+      "sha256": "e8f948d0367820dd6dce43d8c057e8bfe7a65889ab2eb6361f062de66d36922b",
+      "language": "csharp",
+      "size": 293,
+      "content": "namespace xbytechat.api.Features.ReportingModule.DTOs\n{\n    public class DirectMessageLogFilterDto\n\n    {\n        public int Page { get; set; } = 1;\n        public int PageSize { get; set; } = 10;\n        public string? Status { get; set; }\n        public string? Search { get; set; }\n    }\n}\n"
+    },
+    {
+      "path": "xbytechat-api/Features/ReportingModule/DTOs/RecentMessageLogDto.cs",
+      "sha256": "f86a239c42fefe2d63c5087c403a7c2cc1e2eea942cc1443bd03495783bbb2f4",
+      "language": "csharp",
+      "size": 586,
+      "content": "// 📄 File: Features/ReportingModule/DTOs/RecentMessageLogDto.cs\nusing System;\n\nnamespace xbytechat.api.Features.ReportingModule.DTOs\n{\n    public class RecentMessageLogDto\n    {\n        public Guid Id { get; set; }\n        public string RecipientNumber { get; set; }\n        public string MessageContent { get; set; }\n        public DateTime CreatedAt { get; set; }\n        public DateTime? SentAt { get; set; }             \n        public Guid? CampaignId { get; set; }\n        public string? Status { get; set; }\n        public string? ErrorMessage { get; set; }         \n    }\n}\n\n"
+    },
+    {
+      "path": "xbytechat-api/Features/ReportingModule/Services/IMessageAnalyticsService.cs",
+      "sha256": "08c8fb19a092bb252492d04c2114547e4ca4a5725875accb403182551c8229f4",
+      "language": "csharp",
+      "size": 536,
+      "content": "using System;\nusing System.Collections.Generic;\nusing System.Threading.Tasks;\nusing xbytechat.api.Features.MessagesEngine.DTOs;\nusing xbytechat.api.Features.ReportingModule.DTOs;\nusing xbytechat.api.Shared;\n\nnamespace xbytechat.api.Features.ReportingModule.Services\n{\n    public interface IMessageAnalyticsService\n    {\n        Task<List<RecentMessageLogDto>> GetRecentLogsAsync(Guid businessId, int limit);\n        Task<PaginatedResponse<RecentMessageLogDto>> GetPaginatedLogsAsync(Guid businessId, PaginatedRequest request);\n    }\n}\n\n"
+    },
+    {
+      "path": "xbytechat-api/Features/ReportingModule/Services/MessageAnalyticsService.cs",
+      "sha256": "3a87316fa63b4890a5bc35b2d867a96a2a7d73e8aea0e52ff6854e89c4245b7a",
+      "language": "csharp",
+      "size": 2844,
+      "content": "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Threading.Tasks;\nusing Microsoft.EntityFrameworkCore;\nusing xbytechat.api.Features.MessagesEngine.DTOs;\nusing xbytechat.api.Features.ReportingModule.DTOs;\nusing xbytechat.api.Shared;\n\nnamespace xbytechat.api.Features.ReportingModule.Services\n{\n    public class MessageAnalyticsService : IMessageAnalyticsService\n    {\n        private readonly AppDbContext _context;\n\n        public MessageAnalyticsService(AppDbContext context)\n        {\n            _context = context;\n        }\n\n        public async Task<List<RecentMessageLogDto>> GetRecentLogsAsync(Guid businessId, int limit)\n        {\n            return await _context.MessageLogs\n                .Where(x => x.BusinessId == businessId)\n                .OrderByDescending(x => x.CreatedAt)\n                .Take(limit)\n                .Select(x => new RecentMessageLogDto\n                {\n                    Id = x.Id,\n                    RecipientNumber = x.RecipientNumber,\n                    MessageContent = x.MessageContent,\n                    CreatedAt = x.CreatedAt,\n                    CampaignId = x.CampaignId,\n                    Status = x.Status,\n                    SentAt = x.SentAt,\n                })\n                .ToListAsync();\n        }\n\n        public async Task<PaginatedResponse<RecentMessageLogDto>> GetPaginatedLogsAsync(Guid businessId, PaginatedRequest request)\n        {\n            var query = _context.MessageLogs\n                .Where(x => x.BusinessId == businessId);\n\n            if (!string.IsNullOrEmpty(request.Status))\n                query = query.Where(x => x.Status == request.Status);\n\n            if (!string.IsNullOrEmpty(request.Search))\n                query = query.Where(x =>\n                    x.RecipientNumber.Contains(request.Search) ||\n                    x.MessageContent.Contains(request.Search));\n\n            var totalCount = await query.CountAsync();\n\n            var items = await query\n                .OrderByDescending(x => x.CreatedAt)\n                .Skip((request.Page - 1) * request.PageSize)\n                .Take(request.PageSize)\n                .Select(x => new RecentMessageLogDto\n                {\n                    Id = x.Id,\n                    RecipientNumber = x.RecipientNumber,\n                    MessageContent = x.MessageContent,\n                    CreatedAt = x.CreatedAt,\n                    CampaignId = x.CampaignId,\n                    Status = x.Status,\n                    SentAt = x.SentAt,\n                })\n                .ToListAsync();\n\n            return new PaginatedResponse<RecentMessageLogDto>\n            {\n                Items = items,\n                TotalCount = totalCount,\n                Page = request.Page,\n                PageSize = request.PageSize\n            };\n        }\n\n    }\n}\n\n"
+    }
+  ]
+}

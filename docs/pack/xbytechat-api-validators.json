@@ -1,0 +1,13 @@
+{
+  "name": "xbytechat-api/Validators",
+  "generatedAt": "2025-09-12 10:33:04 +00:00",
+  "files": [
+    {
+      "path": "xbytechat-api/Validators/MessageTypeValidator.cs",
+      "sha256": "a9accea936700f5fa40d270dffc11079bdce7a4ede1f30f968b41436460b80b2",
+      "language": "csharp",
+      "size": 871,
+      "content": "namespace xbytechat.api.Validators\n{\n    /// <summary>\n    /// Centralized validator for supported message types (text, image, template, etc.)\n    /// </summary>\n    public static class MessageTypeValidator\n    {\n        private static readonly HashSet<string> SupportedTypes = new()\n        {\n            \"text\", \"image\", \"template\"\n        };\n\n        /// <summary>\n        /// Checks whether a messageType is supported.\n        /// </summary>\n        public static bool IsValid(string? messageType)\n        {\n            return !string.IsNullOrWhiteSpace(messageType) &&\n                   SupportedTypes.Contains(messageType.ToLower());\n        }\n\n        /// <summary>\n        /// Returns all supported message types.\n        /// </summary>\n        public static IEnumerable<string> GetSupportedTypes()\n        {\n            return SupportedTypes;\n        }\n    }\n}\n"
+    }
+  ]
+}
