@@ -478,7 +478,7 @@ builder.Services
                 var path = context.HttpContext.Request.Path;
 
                 if (!string.IsNullOrEmpty(accessToken) &&
-                    path.StartsWithSegments("/hubs/inbox"))
+                    path.StartsWithSegments("/api/hubs/inbox"))
                 {
                     context.Token = accessToken;
                 }
