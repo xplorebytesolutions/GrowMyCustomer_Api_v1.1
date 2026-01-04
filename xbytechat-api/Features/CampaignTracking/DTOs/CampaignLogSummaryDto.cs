@@ -11,5 +11,10 @@
         public int Read { get; set; }
         public int Sent { get; set; }
 
+        public int RepliedUniqueContacts { get; set; }
+
+        // ✅ NEW: so frontend can label “Replied (X days)”
+        public int ReplyWindowDays { get; set; }
+
     }
 }

@@ -44,120 +44,6 @@ namespace xbytechat.api.AuthModule.Services
             _dbContext = dbContext;
         }
 
-        //        public async Task<ResponseResult> LoginAsync(UserLoginDto dto)
-        //        {
-        //            _logger.LogInformation("🔑 Login attempt for email: {Email}", dto.Email);
-        //            var hashedPassword = HashPassword(dto.Password);
-
-        //            var user = await _userRepo
-        //                .AsQueryable()
-        //                .Where(u => u.Email == dto.Email && u.PasswordHash == hashedPassword && !u.IsDeleted)
-        //                .Include(u => u.Role)
-        //                .FirstOrDefaultAsync();
-
-        //            if (user == null)
-        //            {
-        //                _logger.LogWarning("❌ Login failed: Invalid email or password for {Email}", dto.Email);
-        //                return ResponseResult.ErrorInfo("❌ Invalid email or password");
-        //            }
-
-        //            var roleName = user.Role?.Name?.Trim().ToLower() ?? "unknown";
-        //            var isAdminType = roleName is "admin" or "superadmin" or "partner" or "reseller";
-
-        //            if (user.BusinessId == null && !isAdminType)
-        //            {
-        //                _logger.LogWarning("❌ Login denied for {Email}: No BusinessId and not admin", dto.Email);
-        //                return ResponseResult.ErrorInfo("❌ Your account approval is pending. Please contact your administrator or support.");
-        //            }
-
-        //            Business? business = null;
-        //            Guid? planId = null;
-        //            string companyName = string.Empty;
-        //            string businessId = user.BusinessId?.ToString() ?? string.Empty;
-
-        //            if (user.BusinessId != null)
-        //            {
-        //                business = await _businessService.Query()
-        //                    .Include(b => b.Plan)
-        //                    .FirstOrDefaultAsync(b => b.Id == user.BusinessId.Value);
-
-        //                if (business == null)
-        //                    return ResponseResult.ErrorInfo("❌ Associated business not found.");
-
-        //                if (business.Status == Business.StatusType.Pending)
-        //                    return ResponseResult.ErrorInfo("⏳ Your business is under review. Please wait for approval.");
-
-        //                //if (!business.PlanId.HasValue)
-        //                //    return ResponseResult.ErrorInfo("❌ No plan assigned to this business.");
-
-        //                planId = business.PlanId;
-        //                companyName = business.CompanyName ?? string.Empty;
-
-        //                _logger.LogInformation("Business {BusinessId} login. Status: {Status}, PlanId: {PlanId}", business.Id, business.Status, planId
-        //);
-        //            }
-
-        //            if (isAdminType)
-        //            {
-        //                // Admins don’t get plan restrictions
-        //                companyName = "xByte Admin";
-        //                businessId = string.Empty;
-        //                planId = null;
-        //            }
-
-        //            // 🔥 Compute EFFECTIVE permissions (plan ∩ role) and derive features
-        //            var (permCodes, featureKeys) = isAdminType
-        //                ? (await GetAllActivePermissions(), new List<string> { "Dashboard", "Messaging", "CRM", "Campaigns", "Catalog", "AdminPanel" })
-        //                : await GetEffectivePermissionsAndFeaturesAsync(user.Id);
-
-        //            // 🎫 Generate JWT (now includes permissions, features, plan_id)
-        //            var token = _jwtTokenService.GenerateToken(
-        //                userId: user.Id.ToString(),
-        //                role: roleName,
-        //                userName: user.Name ?? string.Empty,
-        //                email: user.Email ?? string.Empty,
-        //                status: user.Status ?? "unknown",
-        //                businessId: businessId,
-        //                companyName: companyName,
-        //                permissions: permCodes ?? new List<string>(),
-        //                planId: planId?.ToString() ?? string.Empty,
-        //                features: featureKeys,
-        //                hasAllAccess: isAdminType
-        //            );
-        //            try
-        //            {
-        //                var jwt = new JwtSecurityTokenHandler().ReadJwtToken(token);
-        //                var pid = jwt.Claims.FirstOrDefault(c => c.Type == "plan_id")?.Value;
-        //                _logger.LogInformation("🔎 JWT includes plan_id: {PlanId}", pid ?? "<null>");
-        //            }
-        //            catch { /* ignore */ }
-        //            var userDto = new UserDto
-        //            {
-        //                Id = user.Id,
-        //                Name = user.Name,
-        //                Email = user.Email,
-        //                Role = roleName,
-        //                Status = user.Status,
-        //                CreatedAt = user.CreatedAt,
-        //                BusinessId = string.IsNullOrEmpty(businessId) ? Guid.Empty : Guid.Parse(businessId),
-        //                CompanyName = companyName,
-        //                PlanId = planId,
-        //                AccessToken = null
-        //            };
-
-        //            _logger.LogInformation(
-        //                "✅ Login successful for {Email}, Role: {Role}, PlanId: {PlanId}",
-        //                dto.Email, roleName, planId
-        //            );
-
-        //            return new ResponseResult
-        //            {
-        //                Success = true,
-        //                Message = "✅ Login successful",
-        //                Data = userDto,
-        //                Token = token
-        //            };
-        //        }
 
         public async Task<ResponseResult> LoginAsync(UserLoginDto dto)
         {
@@ -178,6 +64,19 @@ namespace xbytechat.api.AuthModule.Services
 
             var roleName = user.Role?.Name?.Trim().ToLower() ?? "unknown";
             var isAdminType = roleName is "admin" or "superadmin" or "partner" or "reseller";
+
+            // ✅ NEW: Block deactivated/non-active users (important for TeamStaff)
+            if (!isAdminType)
+            {
+                var st = (user.Status ?? "").Trim().ToLowerInvariant();
+
+                // You can add/remove statuses here as per your system rules
+                if (st is "hold" or "inactive" or "rejected" or "pending")
+                {
+                    _logger.LogWarning("🚫 Login blocked due to user status. Email={Email}, Status={Status}", dto.Email, user.Status);
+                    return ResponseResult.ErrorInfo("❌ Your account is not active. Please contact your administrator.");
+                }
+            }
 
             if (user.BusinessId == null && !isAdminType)
             {
@@ -318,70 +217,6 @@ namespace xbytechat.api.AuthModule.Services
             return ResponseResult.SuccessInfo("✅ Signup successful. Pending approval.", new { BusinessId = business.Id });
         }
 
-
-        // 🔄 Refresh JWT Token (and Rotate)
-        //public async Task<ResponseResult> RefreshTokenAsync(string refreshToken)
-        //{
-        //    _logger.LogInformation("🔄 RefreshToken attempt");
-
-        //    var user = await _userRepo
-        //        .AsQueryable()
-        //        .Include(u => u.Role)
-        //        .Include(u => u.Business)
-        //            .ThenInclude(b => b.BusinessPlanInfo)
-        //        .FirstOrDefaultAsync(u => u.RefreshToken == refreshToken && u.RefreshTokenExpiry > DateTime.UtcNow);
-
-        //    if (user == null)
-        //    {
-        //        _logger.LogWarning("❌ Invalid or expired refresh token.");
-        //        return ResponseResult.ErrorInfo("❌ Invalid or expired refresh token.");
-        //    }
-
-        //    var roleName = user.Role?.Name?.Trim().ToLower() ?? "unknown";
-        //    var isAdminType = roleName is "admin" or "superadmin" or "partner" or "reseller";
-
-        //    string planId = user.Business?.PlanId?.ToString() ?? string.Empty;
-        //    string companyName = isAdminType ? "xByte Admin" : (user.Business?.CompanyName ?? string.Empty);
-        //    string businessId = isAdminType ? string.Empty : (user.BusinessId?.ToString() ?? string.Empty);
-
-        //    var (permCodes, featureKeys) = isAdminType
-        //        ? (await GetAllActivePermissions(), new List<string> { "Dashboard", "Messaging", "CRM", "Campaigns", "Catalog", "AdminPanel" })
-        //        : await GetEffectivePermissionsAndFeaturesAsync(user.Id);
-
-        //    var claims = new List<Claim>
-        //{
-        //    new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
-        //    new Claim("id", user.Id.ToString()),
-        //    new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
-        //    new Claim("email", user.Email ?? ""),
-        //    new Claim("name", user.Name ?? ""),
-        //    new Claim("status", user.Status ?? "unknown"),
-        //    new Claim("businessId", businessId),
-        //    new Claim("companyName", companyName),
-        //    new Claim("permissions", string.Join(",", permCodes ?? new List<string>())),
-        //    new Claim("features", string.Join(",", featureKeys ?? new List<string>())),
-        //    new Claim("hasAllAccess", isAdminType ? "true" : "false"),
-        //    new Claim("role", roleName),
-        //    new Claim(ClaimTypes.Role, roleName),
-        //    new Claim("plan_id", planId ?? string.Empty)
-        //};
-
-        //    var token = _jwtTokenService.GenerateToken(claims);
-
-        //    // 🔁 Rotate refresh token
-        //    var newRefreshToken = Guid.NewGuid().ToString("N");
-        //    user.RefreshToken = newRefreshToken;
-        //    user.RefreshTokenExpiry = DateTime.UtcNow.AddDays(30);
-        //    _userRepo.Update(user);
-
-        //    _logger.LogInformation("🔄 Token refreshed for user {UserId}, role {Role}", user.Id, roleName);
-
-        //    return ResponseResult.SuccessInfo("🔄 Token refreshed", new
-        //    {
-        //        accessToken = token,
-        //        refreshToken = newRefreshToken
-        //    });
-        //}
         public async Task<ResponseResult> RefreshTokenAsync(string refreshToken)
         {
             _logger.LogInformation("🔄 RefreshToken attempt");
@@ -406,6 +241,19 @@ namespace xbytechat.api.AuthModule.Services
 
             var roleName = user.Role?.Name?.Trim().ToLower() ?? "unknown";
             var isAdminType = roleName is "admin" or "superadmin" or "partner" or "reseller";
+
+            // ✅ NEW: Block refresh for non-active users (prevents silent re-login for disabled staff)
+            if (!isAdminType)
+            {
+                var st = (user.Status ?? "").Trim().ToLowerInvariant();
+                if (st is "hold" or "inactive" or "rejected" or "pending")
+                {
+                    _logger.LogWarning("🚫 RefreshToken blocked due to user status. UserId={UserId}, Email={Email}, Status={Status}",
+                        user.Id, user.Email, user.Status);
+
+                    return ResponseResult.ErrorInfo("❌ Your account is not active. Please contact your administrator.");
+                }
+            }
 
             string companyName;
             string businessId;
@@ -525,98 +373,108 @@ namespace xbytechat.api.AuthModule.Services
             return ResponseResult.SuccessInfo("✅ Password reset successfully");
         }
 
-        // Utility: Hash password using SHA256
-        //private string HashPassword(string password)
-        //{
-        //    using var sha = SHA256.Create();
-        //    var bytes = Encoding.UTF8.GetBytes(password);
-        //    var hash = sha.ComputeHash(bytes);
-        //    return Convert.ToBase64String(hash);
-        //}
-        // INTERSECTION: Role ∩ Plan for the user, then map groups -> feature keys
-        //private async Task<(List<string> Perms, List<string> Features)> GetEffectivePermissionsAndFeaturesAsync(Guid userId)
-        //{
-        //    var userAndPermissions = _dbContext.Users
-        //        .Where(u => u.Id == userId)
-        //        .Join(_dbContext.Businesses,
-        //            u => u.BusinessId,
-        //            b => b.Id,
-        //            (u, b) => new { u, b })
-        //        .Join(_dbContext.PlanPermissions.Where(pp => pp.IsActive),
-        //            ub => ub.b.PlanId,
-        //            pp => pp.PlanId,
-        //            (ub, pp) => new { ub.u, pp })
-        //        .Join(_dbContext.Permissions.Where(p => p.IsActive),
-        //            ubpp => ubpp.pp.PermissionId,
-        //            p => p.Id,
-        //            (ubpp, p) => new { ubpp.u, p }); // This gives you a sequence of {user, permission} pairs
-
-        //    // Replace the final problematic Join with this Where clause
-        //    var rows = await userAndPermissions
-        //        .Where(up => _dbContext.RolePermissions
-        //            .Where(rp => rp.IsActive && !rp.IsRevoked)
-        //            .Any(rp => rp.RoleId == up.u.RoleId && rp.PermissionId == up.p.Id))
-        //        .Select(up => up.p) // Select the final permission object
-        //        .Select(p => new { p.Code, p.Group })
-        //        .Distinct()
-        //        .ToListAsync();
-
-        //    var perms = rows.Select(r => r.Code).ToList();
-
-        //    var features = rows.Select(r => r.Group)
-        //        .Where(g => !string.IsNullOrWhiteSpace(g))
-        //        .Select(GroupToFeature)
-        //        .Where(f => f != null)
-        //        .Select(f => f!)
-        //        .Distinct(StringComparer.OrdinalIgnoreCase)
-        //        .ToList();
-
-        //    return (perms, features);
-        //}
-        //// If you ever need “all perms” (e.g., for superadmins)
-        /// <summary>
-        /// 
-        /// </summary>
-        /// <returns></returns>
-        /// 
         private async Task<(List<string> Perms, List<string> Features)> GetEffectivePermissionsAndFeaturesAsync(Guid userId)
         {
-            var rows = await _dbContext.Users
-                .AsNoTracking()
-                .Where(u => u.Id == userId)
-                .Join(_dbContext.Businesses.AsNoTracking(),
-                      u => u.BusinessId,
-                      b => b.Id,
-                      (u, b) => new { u, b })
-                .Join(_dbContext.PlanPermissions.AsNoTracking().Where(pp => pp.IsActive),
-                      ub => ub.b.PlanId,
-                      pp => pp.PlanId,
-                      (ub, pp) => new { ub.u, pp })
-                .Join(_dbContext.Permissions.AsNoTracking().Where(p => p.IsActive),
-                      ubpp => ubpp.pp.PermissionId,
-                      p => p.Id,
-                      (ubpp, p) => new { ubpp.u, p })
-                // Intersect with RolePermissions via EXISTS
-                .Where(up => _dbContext.RolePermissions
-                    .AsNoTracking()
-                    .Where(rp => rp.IsActive && !rp.IsRevoked)
-                    .Any(rp => rp.RoleId == up.u.RoleId && rp.PermissionId == up.p.Id))
-                .Select(up => new { up.p.Code, up.p.Group })
+            var user = await _dbContext.Users
+                .Include(u => u.Role)
+                .Include(u => u.Business)
+                    .ThenInclude(b => b.Plan)
+                .FirstOrDefaultAsync(u => u.Id == userId);
+
+            if (user == null || user.Business == null || user.Role == null)
+                return (new List<string>(), new List<string>());
+
+            var businessId = user.Business.Id;
+            var planId = user.Business.PlanId;
+            var roleId = user.Role.Id;
+
+            // 1) Plan permissions (active)
+            var planPerms = await _dbContext.PlanPermissions
+                .Where(pp => pp.PlanId == planId && pp.IsActive)
+                .Select(pp => pp.Permission.Code)
+                .ToListAsync();
+
+            var planEffectiveForBusiness = new HashSet<string>(planPerms, StringComparer.OrdinalIgnoreCase);
+
+            // 2) Apply BUSINESS overrides (grant/deny)
+            var now = DateTime.UtcNow;
+
+            var bizOverrides = await _dbContext.BusinessPermissionOverrides
+                .Where(o =>
+                    o.BusinessId == businessId &&
+                    !o.IsRevoked &&
+                    (o.ExpiresAtUtc == null || o.ExpiresAtUtc > now))
+                .Select(o => new { Code = o.Permission.Code, o.IsGranted })
+                .ToListAsync();
+
+            foreach (var o in bizOverrides)
+            {
+                if (string.IsNullOrWhiteSpace(o.Code)) continue;
+                if (o.IsGranted) planEffectiveForBusiness.Add(o.Code);
+                else planEffectiveForBusiness.Remove(o.Code);
+            }
+
+            // 3) Role permissions (active + not revoked)
+            var rolePerms = await _dbContext.RolePermissions
+                .Where(rp => rp.RoleId == roleId && rp.IsActive && !rp.IsRevoked)
+                .Select(rp => rp.Permission.Code)
+                .ToListAsync();
+
+            var roleName = (user.Role.Name ?? "").Trim();
+
+            // ✅ Business owner: do NOT require RolePermissions rows to exist.
+            var isBusinessOwnerRole =
+                roleName.Equals("business", StringComparison.OrdinalIgnoreCase) ||
+                roleName.Equals("owner", StringComparison.OrdinalIgnoreCase);
+
+            HashSet<string> effective;
+
+            if (isBusinessOwnerRole)
+            {
+                effective = new HashSet<string>(planEffectiveForBusiness, StringComparer.OrdinalIgnoreCase);
+            }
+            else
+            {
+                // Staff: must be within plan and within role
+                effective = new HashSet<string>(
+                    planEffectiveForBusiness.Intersect(rolePerms, StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase
+                );
+            }
+
+            // 4) Apply USER overrides (grant/deny)
+            // NOTE: Grants should never exceed the plan ceiling. So only add if it's in planEffectiveForBusiness.
+            var userOverrides = await _dbContext.UserPermissions
+                .Where(up => up.UserId == userId && !up.IsRevoked)
+                .Select(up => new { Code = up.Permission.Code, up.IsGranted })
+                .ToListAsync();
+
+            foreach (var ov in userOverrides)
+            {
+                if (string.IsNullOrWhiteSpace(ov.Code)) continue;
+
+                if (ov.IsGranted)
+                {
+                    if (planEffectiveForBusiness.Contains(ov.Code))
+                        effective.Add(ov.Code);
+                }
+                else
+                {
+                    effective.Remove(ov.Code);
+                }
+            }
+
+            // 5) Map Permission.Group to feature keys (your current behavior)
+            var featureKeys = await _dbContext.Permissions
+                .Where(p => p.IsActive && effective.Contains(p.Code))
+                .Select(p => p.Group)
+                .Where(g => g != null && g != "")
                 .Distinct()
                 .ToListAsync();
 
-            var perms = rows.Select(r => r.Code).ToList();
-
-            var features = rows.Select(r => r.Group)
-                .Where(g => !string.IsNullOrWhiteSpace(g))
-                .Select(GroupToFeature)
-                .Where(f => f != null)
-                .Select(f => f!)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            return (perms, features);
+            return (effective.OrderBy(x => x).ToList(), featureKeys!);
         }
+
 
         private async Task<List<string>> GetAllActivePermissions() =>
             await _dbContext.Permissions

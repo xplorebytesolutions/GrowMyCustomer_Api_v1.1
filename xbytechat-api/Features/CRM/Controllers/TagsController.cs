@@ -35,7 +35,17 @@ namespace xbytechat.api.Features.CRM.Controllers
             return Ok(ResponseResult.SuccessInfo("Tag updated."));
         }
 
+        ////[HttpGet("get-tags")]
         [HttpGet("get-tags")]
+        public async Task<IActionResult> GetAllTagsLegacy()
+        {
+            // Backward compatible alias for older clients
+            var businessId = HttpContext.User.GetBusinessId();
+            var tags = await _tagService.GetAllTagsAsync(businessId);
+            return Ok(ResponseResult.SuccessInfo("Tags loaded.", tags));
+        }
+
+        [HttpGet]
         public async Task<IActionResult> GetAllTags()
         {
             var businessId = HttpContext.User.GetBusinessId();

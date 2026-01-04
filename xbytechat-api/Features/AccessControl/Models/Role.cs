@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using xbytechat.api.AuthModule.Models;
+using xbytechat.api.Features.BusinessModule.Models;
 
 namespace xbytechat.api.Features.AccessControl.Models
 {
@@ -11,6 +12,9 @@ namespace xbytechat.api.Features.AccessControl.Models
         public string Name { get; set; } // e.g. SuperAdmin, PartnerAdmin, BusinessAdmin, Staff, etc.
 
         public string? Description { get; set; }
+        public Guid? BusinessId { get; set; }
+
+        public Business? Business { get; set; }
 
         public bool IsSystemDefined { get; set; } = false; // true for SuperAdmin, PartnerAdmin
 

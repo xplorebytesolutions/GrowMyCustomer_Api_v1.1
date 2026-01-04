@@ -8,10 +8,10 @@ namespace xbytechat.api.Features.CampaignModule.Services
     public interface ICampaignMaterializer
     {
         Task<CampaignCsvMaterializeResponseDto> CreateAsync(
-       Guid businessId,
-       Guid campaignId,
-       CampaignCsvMaterializeRequestDto request,
-       CancellationToken ct = default);
-
+            Guid businessId,
+            Guid campaignId,
+            CampaignCsvMaterializeRequestDto request,
+            string actor,
+            CancellationToken ct = default);
     }
 }

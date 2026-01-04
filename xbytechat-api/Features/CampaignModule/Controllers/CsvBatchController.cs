@@ -52,6 +52,7 @@ namespace xbytechat.api.Features.CampaignModule.Controllers
                 fileName: form.File.FileName,
                 stream: stream,
                 audienceId: form.AudienceId,
+                campaignId: form.CampaignId,
                 ct: ct);
 
             return Ok(new { success = true, data = result });

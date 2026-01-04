@@ -75,11 +75,14 @@ namespace xbytechat.api.Features.CampaignModule.Models
 
         public ICollection<CampaignVariableMap> VariableMaps { get; set; } = new List<CampaignVariableMap>();
 
-        public Guid? AudienceId { get; set; }
-        public ICollection<Audience> Audiences { get; set; } = new List<Audience>();
+        //public Guid? AudienceId { get; set; }
+        //public ICollection<Audience> Audiences { get; set; } = new List<Audience>();
 
         public string? VideoUrl { get; set; }
         public string? DocumentUrl { get; set; }
+
+        public ICollection<CampaignAudienceAttachment> AudienceAttachments { get; set; }
+    = new List<CampaignAudienceAttachment>();
     }
 }
 

@@ -24,5 +24,8 @@ namespace xbytechat.api.Features.ChatInbox.DTOs
         /// We also accept "New"/"Pending" but treat them as Open internally.
         /// </summary>
         public string? TargetStatus { get; set; }
+
+        // Compatibility alias for newer clients posting { status: "Open"|"Pending"|"Closed" }
+        public string? Status { get; set; }
     }
 }

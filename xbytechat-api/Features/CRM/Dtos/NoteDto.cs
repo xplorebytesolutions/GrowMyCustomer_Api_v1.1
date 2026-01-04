@@ -4,7 +4,7 @@
     {
         public Guid Id { get; set; }
         public Guid? ContactId { get; set; }
-        public string Title { get; set; }
+        public string? Title { get; set; }
         public string Content { get; set; }
         public string Source { get; set; }
         public string CreatedBy { get; set; }

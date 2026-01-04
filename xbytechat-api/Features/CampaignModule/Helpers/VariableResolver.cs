@@ -51,12 +51,15 @@ namespace xbytechat.api.Features.CampaignModule.Helpers
             {
                 if (string.IsNullOrWhiteSpace(token)) continue;
 
+                // Back-compat: allow mapping keys like "headerpara1"/"buttonpara1" and canonicalize them.
+                var canonToken = CanonicalizeKey(token);
+
                 var src = (srcRaw ?? string.Empty).Trim();
 
                 // Allow "constant:VALUE" mapping
                 if (src.StartsWith("constant:", StringComparison.OrdinalIgnoreCase))
                 {
-                    result[token] = src.Substring("constant:".Length).Trim();
+                    result[canonToken] = src.Substring("constant:".Length).Trim();
                     continue;
                 }
 
@@ -65,15 +68,15 @@ namespace xbytechat.api.Features.CampaignModule.Helpers
 
                 if (rowData.TryGetValue(canonSrc, out var vCanon) && vCanon != null)
                 {
-                    result[token] = vCanon.Trim();
+                    result[canonToken] = vCanon.Trim();
                 }
                 else if (rowData.TryGetValue(src, out var vRaw) && vRaw != null) // final fallback
                 {
-                    result[token] = vRaw.Trim();
+                    result[canonToken] = vRaw.Trim();
                 }
                 else
                 {
-                    result[token] = string.Empty;
+                    result[canonToken] = string.Empty;
                 }
             }
 

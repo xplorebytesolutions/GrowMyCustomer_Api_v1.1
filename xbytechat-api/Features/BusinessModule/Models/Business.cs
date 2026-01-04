@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using xbytechat.api.AuthModule.Models;
 using xbytechat.api.Features.AccessControl.Models;
 using xbytechat.api.Features.CampaignModule.Models;
+using xbytechat.api.Features.ChatInbox.Models;
 using xbytechat.api.Features.MessageManagement.DTOs;
 using xbytechat.api.Models.BusinessModel;
 using xbytechat_api.WhatsAppSettings.Models;
@@ -67,6 +68,11 @@ namespace xbytechat.api.Features.BusinessModule.Models
 
        // public WhatsAppSettingEntity WhatsAppSettings { get; set; }
         public ICollection<WhatsAppSettingEntity> WhatsAppSettings { get; set; }
+
+        public ICollection<Role> Roles { get; set; }
+
+        // 📥 Inbox visibility policy (Shared vs Restricted)
+        public InboxVisibilityMode InboxVisibilityMode { get; set; } = InboxVisibilityMode.SharedInInbox;
 
     }
 }

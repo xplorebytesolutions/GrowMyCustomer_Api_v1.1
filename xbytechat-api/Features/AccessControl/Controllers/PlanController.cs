@@ -162,20 +162,41 @@ namespace xbytechat.api.Features.AccessControl.Controllers
         }
 
         // 📄 Features/AccessControl/Controllers/PlanController.cs
+        //[HttpPut("{planId:guid}/permissions")]
+        //[Authorize(Roles = "superadmin,partneradmin,admin")]
+        //public async Task<IActionResult> UpdatePlanPermissions(
+        //    Guid planId,
+        //    [FromBody] UpdatePlanPermissionsRequest body,
+        //    CancellationToken ct)
+        //{
+        //    var actor = User?.Identity?.Name ?? "system";
+        //    await _planService.UpdatePlanPermissionsAsync(
+        //        planId,
+        //        body.PermissionIds,     // must be named PermissionIds
+        //        body.ReplaceAll,        // default true
+        //        actor,
+        //        ct);
+
+        //    return NoContent(); // 204
+        //}
         [HttpPut("{planId:guid}/permissions")]
         [Authorize(Roles = "superadmin,partneradmin,admin")]
         public async Task<IActionResult> UpdatePlanPermissions(
-            Guid planId,
-            [FromBody] UpdatePlanPermissionsRequest body,
-            CancellationToken ct)
+    Guid planId,
+    [FromBody] UpdatePlanPermissionsRequest body,
+    CancellationToken ct)
         {
             var actor = User?.Identity?.Name ?? "system";
+
             await _planService.UpdatePlanPermissionsAsync(
                 planId,
-                body.PermissionIds,     // must be named PermissionIds
-                body.ReplaceAll,        // default true
+                body.PermissionIds,
+                body.ReplaceAll,
                 actor,
                 ct);
+
+            // ✅ CRITICAL: clear cache so changes apply instantly
+            _permissionCacheService.ClearPlanPermissionsCache(planId);
 
             return NoContent(); // 204
         }

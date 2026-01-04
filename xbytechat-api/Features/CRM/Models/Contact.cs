@@ -54,6 +54,13 @@ namespace xbytechat.api.Features.CRM.Models
         // 👤 If agent assigned, automation should pause (runtime check)
         public Guid? AssignedAgentId { get; set; }
 
+        // --- Chat Inbox fields ---
+        [MaxLength(20)]
+        public string InboxStatus { get; set; } = "Open"; // Open / Pending / Closed
+
+        public DateTime? LastInboundAt { get; set; }   // UTC
+        public DateTime? LastOutboundAt { get; set; }  // UTC
+
         public bool IsFavorite { get; set; } = false;
         public bool IsArchived { get; set; } = false;
         public string? Group { get; set; }

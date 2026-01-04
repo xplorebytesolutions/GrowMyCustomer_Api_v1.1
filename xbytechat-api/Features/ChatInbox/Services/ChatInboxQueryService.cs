@@ -6,33 +6,46 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using xbytechat.api.Features.ChatInbox.DTOs;
-using xbytechat.api.Models; // AppDbContext
-// We avoid referencing MessageLog / Contact types by name so we don't fight namespaces.
+using xbytechat.api.Features.ChatInbox.Models;
+using xbytechat.api.Features.ChatInbox.Utils;
+using xbytechat.api.Models;
 
 namespace xbytechat.api.Features.ChatInbox.Services
 {
-    /// <summary>
-    /// Default implementation of IChatInboxQueryService.
-    /// 
-    /// v1 implementation:
-    ///  - Groups MessageLogs by ContactId for a Business.
-    ///  - Joins Contacts for display name / phone.
-    ///  - Computes last message, unread count (per user), 24h window, assignment flags.
-    ///  - Applies tab filters ("live", "history", "unassigned", "my") and search.
-    /// 
-    /// This is intentionally conservative and can be optimized later
-    /// (server-side aggregates, better indexes, source-type mapping, etc.).
-    /// </summary>
     public sealed class ChatInboxQueryService : IChatInboxQueryService
     {
+        private const string InboxAssignPermissionCode = "INBOX.CHAT.ASSIGN";
+
         private readonly AppDbContext _db;
+
+        private sealed class ConversationsCursor
+        {
+            public DateTime LastMessageAtUtc { get; set; }
+            public Guid ContactId { get; set; }
+        }
+
+        private sealed class MessagesCursor
+        {
+            public DateTime InstantUtc { get; set; }
+            public Guid MessageId { get; set; }
+        }
 
         public ChatInboxQueryService(AppDbContext db)
         {
             _db = db ?? throw new ArgumentNullException(nameof(db));
         }
 
+        // ✅ Backward compatible (old behavior)
         public async Task<IReadOnlyList<ChatInboxConversationDto>> GetConversationsAsync(
+            ChatInboxFilterDto filter,
+            CancellationToken ct = default)
+        {
+            var page = await GetConversationsPageAsync(filter, ct).ConfigureAwait(false);
+            return page.Items;
+        }
+
+        // ✅ New: cursor page
+        public async Task<PagedResultDto<ChatInboxConversationDto>> GetConversationsPageAsync(
             ChatInboxFilterDto filter,
             CancellationToken ct = default)
         {
@@ -40,54 +53,161 @@ namespace xbytechat.api.Features.ChatInbox.Services
             if (filter.BusinessId == Guid.Empty)
                 throw new ArgumentException("BusinessId is required.", nameof(filter));
 
-            // Hard cap to avoid insane result sets
             var limit = filter.Limit <= 0 ? 50 : filter.Limit;
             if (limit > 200) limit = 200;
 
             var businessId = filter.BusinessId;
             var currentUserId = filter.CurrentUserId;
 
-            // Base query: all message logs for this business that are linked to a contact.
-            // NOTE: we rely on AppDbContext.MessageLogs and ContactId being non-null for chat contacts.
-            var baseMessagesQuery = _db.MessageLogs
-                .AsNoTracking()
-                .Where(m => m.BusinessId == businessId && m.ContactId != null);
+            var cursorObj = CursorCodec.Decode<ConversationsCursor>(filter.Cursor);
+            var within24hCutoffUtc = DateTime.UtcNow.AddHours(-24);
 
-            // --- 1) Aggregate per contact: last message, first seen, total count ---
-            // This is done server-side; we only bring down a small projection.
-            var convoAggregates = await baseMessagesQuery
-                .GroupBy(m => m.ContactId!.Value)
-                .Select(g => new
+            var convoAgg =
+                from m in _db.MessageLogs.AsNoTracking()
+                where m.BusinessId == businessId && m.ContactId != null
+                group m by m.ContactId!.Value
+                into g
+                select new
                 {
                     ContactId = g.Key,
-                    LastMessageAt = g.Max(m => m.CreatedAt),
-                    FirstSeenAt = g.Min(m => m.CreatedAt),
-                    TotalMessages = g.Count()
-                })
-                .OrderByDescending(x => x.LastMessageAt)
-                .Take(limit)
-                .ToListAsync(ct)
-                .ConfigureAwait(false);
+                    LastMessageAt = g.Max(x => x.SentAt ?? x.CreatedAt),
+                    FirstSeenAt = g.Min(x => x.SentAt ?? x.CreatedAt),
+                    TotalMessages = g.Count(),
+                    LastInboundAt = g.Where(x => x.IsIncoming)
+                        .Max(x => (DateTime?)(x.SentAt ?? x.CreatedAt)),
+                    LastOutboundAt = g.Where(x => !x.IsIncoming)
+                        .Max(x => (DateTime?)(x.SentAt ?? x.CreatedAt))
+                };
 
-            if (convoAggregates.Count == 0)
+            var q =
+                from a in convoAgg
+                join c in _db.Contacts.AsNoTracking()
+                    on a.ContactId equals c.Id
+                where c.BusinessId == businessId
+                select new
+                {
+                    a.ContactId,
+                    a.LastMessageAt,
+                    a.FirstSeenAt,
+                    a.TotalMessages,
+                    a.LastInboundAt,
+                    a.LastOutboundAt,
+                    Contact = c
+                };
+
+            // ✅ Visibility mode (Shared vs Restricted)
+            var visibility = await _db.Businesses
+                .AsNoTracking()
+                .Where(b => b.Id == businessId)
+                .Select(b => (InboxVisibilityMode?)b.InboxVisibilityMode)
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false) ?? InboxVisibilityMode.SharedInInbox;
+
+            // ✅ Restricted mode: non-privileged agents only see chats assigned to them
+            if (visibility == InboxVisibilityMode.AssignedOnly)
             {
-                return Array.Empty<ChatInboxConversationDto>();
+                if (!currentUserId.HasValue || currentUserId.Value == Guid.Empty)
+                {
+                    return new PagedResultDto<ChatInboxConversationDto>
+                    {
+                        Items = Array.Empty<ChatInboxConversationDto>(),
+                        HasMore = false,
+                        NextCursor = null
+                    };
+                }
+
+                var canSeeAll = await CanSeeAllInRestrictedModeAsync(businessId, currentUserId.Value, ct)
+                    .ConfigureAwait(false);
+
+                if (!canSeeAll)
+                {
+                    q = q.Where(x => x.Contact.AssignedAgentId == currentUserId.Value);
+                }
             }
 
-            var contactIds = convoAggregates.Select(x => x.ContactId).ToList();
+            if (filter.OnlyUnassigned)
+                q = q.Where(x => x.Contact.AssignedAgentId == null);
 
-            // --- 2) Load contacts for those ids (CRM) ---
-            // We assume AppDbContext.Contacts exists and has basic fields we need.
-            var contacts = await _db.Contacts
-                .AsNoTracking()
-                .Where(c => c.BusinessId == businessId && contactIds.Contains(c.Id))
-                .ToListAsync(ct)
-                .ConfigureAwait(false);
+            if (filter.OnlyAssignedToMe && currentUserId.HasValue)
+                q = q.Where(x => x.Contact.AssignedAgentId == currentUserId.Value);
 
-            var contactsById = contacts.ToDictionary(c => c.Id, c => c);
+            if (filter.ContactId.HasValue && filter.ContactId.Value != Guid.Empty)
+                q = q.Where(x => x.ContactId == filter.ContactId.Value);
 
-            // --- 3) Load last messages for preview (one per contact) ---
-            // We re-query MessageLogs but only for the selected contactIds.
+            var tab = (filter.Tab ?? string.Empty).Trim().ToLowerInvariant();
+            if (!string.IsNullOrWhiteSpace(tab))
+            {
+                if (tab == "closed")
+                {
+                    q = q.Where(x => x.Contact.InboxStatus == "Closed" || x.Contact.IsArchived || !x.Contact.IsActive);
+                }
+                else
+                {
+                    q = q.Where(x => x.Contact.InboxStatus != "Closed" && !x.Contact.IsArchived && x.Contact.IsActive);
+
+                    if (tab == "live")
+                    {
+                        q = q.Where(x => x.LastInboundAt.HasValue && x.LastInboundAt.Value >= within24hCutoffUtc);
+                    }
+                    else if (tab is "older" or "history")
+                    {
+                        q = q.Where(x => !x.LastInboundAt.HasValue || x.LastInboundAt.Value < within24hCutoffUtc);
+                    }
+                    else if (tab == "unassigned")
+                    {
+                        q = q.Where(x => x.Contact.AssignedAgentId == null);
+                    }
+                    else if (tab == "my")
+                    {
+                        if (currentUserId.HasValue)
+                            q = q.Where(x => x.Contact.AssignedAgentId == currentUserId.Value);
+                        else
+                            q = q.Where(x => false);
+                    }
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(filter.SearchTerm))
+            {
+                var raw = filter.SearchTerm.Trim();
+                var term = raw.ToLowerInvariant();
+
+                q = q.Where(x =>
+                    (!string.IsNullOrEmpty(x.Contact.Name) && x.Contact.Name.ToLower().Contains(term)) ||
+                    (!string.IsNullOrEmpty(x.Contact.ProfileName) && x.Contact.ProfileName.ToLower().Contains(term)) ||
+                    (!string.IsNullOrEmpty(x.Contact.PhoneNumber) && x.Contact.PhoneNumber.Contains(raw)));
+            }
+
+            if (cursorObj != null && cursorObj.ContactId != Guid.Empty)
+            {
+                var lm = DateTime.SpecifyKind(cursorObj.LastMessageAtUtc, DateTimeKind.Utc);
+                var cid = cursorObj.ContactId;
+
+                q = q.Where(x =>
+                    x.LastMessageAt < lm ||
+                    (x.LastMessageAt == lm && x.ContactId.CompareTo(cid) < 0));
+            }
+
+            q = q.OrderByDescending(x => x.LastMessageAt)
+                 .ThenByDescending(x => x.ContactId);
+
+            var rows = await q.Take(limit + 1).ToListAsync(ct).ConfigureAwait(false);
+
+            var hasMore = rows.Count > limit;
+            var pageRows = rows.Take(limit).ToList();
+
+            if (pageRows.Count == 0)
+            {
+                return new PagedResultDto<ChatInboxConversationDto>
+                {
+                    Items = Array.Empty<ChatInboxConversationDto>(),
+                    HasMore = false,
+                    NextCursor = null
+                };
+            }
+
+            var contactIds = pageRows.Select(x => x.ContactId).ToList();
+
             var lastMessages = await _db.MessageLogs
                 .AsNoTracking()
                 .Where(m => m.BusinessId == businessId
@@ -95,7 +215,8 @@ namespace xbytechat.api.Features.ChatInbox.Services
                             && contactIds.Contains(m.ContactId.Value))
                 .GroupBy(m => m.ContactId!.Value)
                 .Select(g => g
-                    .OrderByDescending(m => m.CreatedAt)
+                    .OrderByDescending(m => m.SentAt ?? m.CreatedAt)
+                    .ThenByDescending(m => m.Id)
                     .FirstOrDefault())
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
@@ -104,52 +225,60 @@ namespace xbytechat.api.Features.ChatInbox.Services
                 .Where(m => m != null && m.ContactId != null)
                 .ToDictionary(m => m!.ContactId!.Value, m => m!);
 
-            // --- 4) Compute unread counts for the current user (if any) ---
-            var unreadCounts = new Dictionary<Guid, int>();
+            var assignedUserIds = pageRows
+                .Select(x => x.Contact.AssignedAgentId)
+                .Where(x => x.HasValue)
+                .Select(x => x!.Value)
+                .Distinct()
+                .ToList();
 
-            if (currentUserId.HasValue)
+            var assignedUsersById = new Dictionary<Guid, string>();
+            if (assignedUserIds.Count > 0)
             {
-                // ContactReads for this user + business
-                var reads = await _db.ContactReads
+                var users = await _db.Users
                     .AsNoTracking()
-                    .Where(r => r.BusinessId == businessId
-                                && r.UserId == currentUserId.Value
-                                && contactIds.Contains(r.ContactId))
+                    .Where(u => assignedUserIds.Contains(u.Id))
+                    .Select(u => new { u.Id, Name = (u.Name ?? u.Email) })
                     .ToListAsync(ct)
                     .ConfigureAwait(false);
 
-                var lastReadByContact = reads.ToDictionary(r => r.ContactId, r => r.LastReadAt);
+                assignedUsersById = users.ToDictionary(x => x.Id, x => x.Name ?? "Unknown");
+            }
 
-                // Inbound messages for those contacts
-                var inboundMessages = await _db.MessageLogs
+            var unreadCounts = new Dictionary<Guid, int>();
+            if (currentUserId.HasValue)
+            {
+                var uid = currentUserId.Value;
+
+                var readsQuery = _db.ContactReads
+                    .AsNoTracking()
+                    .Where(r => r.BusinessId == businessId && r.UserId == uid);
+
+                var unreadRows = await _db.MessageLogs
                     .AsNoTracking()
                     .Where(m => m.BusinessId == businessId
                                 && m.ContactId != null
                                 && contactIds.Contains(m.ContactId.Value)
                                 && m.IsIncoming)
-                    .Select(m => new { m.ContactId, m.CreatedAt })
+                    .GroupJoin(
+                        readsQuery,
+                        m => m.ContactId!.Value,
+                        r => r.ContactId,
+                        (m, reads) => new
+                        {
+                            ContactId = m.ContactId!.Value,
+                            Instant = (m.SentAt ?? m.CreatedAt),
+                            LastReadAt = reads.Select(x => (DateTime?)x.LastReadAt).FirstOrDefault()
+                        })
+                    .Where(x => !x.LastReadAt.HasValue || x.Instant > x.LastReadAt.Value)
+                    .GroupBy(x => x.ContactId)
+                    .Select(g => new { ContactId = g.Key, Count = g.Count() })
                     .ToListAsync(ct)
                     .ConfigureAwait(false);
 
-                foreach (var group in inboundMessages.GroupBy(x => x.ContactId!.Value))
-                {
-                    var cid = group.Key;
-                    DateTime? lastRead = null;
-                    if (lastReadByContact.TryGetValue(cid, out var value))
-                    {
-                        lastRead = value;
-                    }
-
-                    var count = lastRead.HasValue
-                        ? group.Count(x => x.CreatedAt > lastRead.Value)
-                        : group.Count();
-
-                    unreadCounts[cid] = count;
-                }
+                unreadCounts = unreadRows.ToDictionary(x => x.ContactId, x => x.Count);
             }
 
-            // --- 5) Load session state for "mode" (automation vs agent), if available ---
-            // We assume ChatSessionStates table exists and tracks Mode + last touch.
             var sessionStates = await _db.ChatSessionStates
                 .AsNoTracking()
                 .Where(s => s.BusinessId == businessId && contactIds.Contains(s.ContactId))
@@ -158,184 +287,187 @@ namespace xbytechat.api.Features.ChatInbox.Services
 
             var sessionByContactId = sessionStates.ToDictionary(s => s.ContactId, s => s);
 
-            // --- 6) Build DTOs in memory ---
-            var nowUtc = DateTime.UtcNow;
-            var results = new List<ChatInboxConversationDto>(convoAggregates.Count);
+            var items = new List<ChatInboxConversationDto>(pageRows.Count);
 
-            foreach (var agg in convoAggregates)
+            foreach (var row in pageRows)
             {
-                if (!contactsById.TryGetValue(agg.ContactId, out var contact))
-                {
-                    // Contact might have been hard-deleted. Skip for now.
-                    continue;
-                }
+                var contact = row.Contact;
 
-                lastMessageByContactId.TryGetValue(agg.ContactId, out var lastMsg);
+                lastMessageByContactId.TryGetValue(row.ContactId, out var lastMsg);
 
                 var preview = lastMsg?.RenderedBody ?? lastMsg?.MessageContent ?? string.Empty;
-                if (preview.Length > 140)
-                {
-                    preview = preview.Substring(0, 140) + "…";
-                }
+                if (preview.Length > 140) preview = preview.Substring(0, 140) + "…";
 
-                var unread = unreadCounts.TryGetValue(agg.ContactId, out var count) ? count : 0;
+                var unread = unreadCounts.TryGetValue(row.ContactId, out var uc) ? uc : 0;
 
-                var within24h = (nowUtc - agg.LastMessageAt).TotalHours <= 24;
+                var lastInboundAt = row.LastInboundAt ?? contact.LastInboundAt;
+                var lastOutboundAt = row.LastOutboundAt ?? contact.LastOutboundAt;
 
-                // Conversation status heuristic:
-                // - Archived / inactive contact => Closed
-                // - Else if unread > 0 => Open
-                // - Else => Pending
+                var within24h =
+                    lastInboundAt.HasValue && lastInboundAt.Value >= within24hCutoffUtc;
+
+                var statusRaw = (contact.InboxStatus ?? string.Empty).Trim();
+                var statusLower = statusRaw.ToLowerInvariant();
                 var status =
-                    (contact.IsArchived || !contact.IsActive) ? "Closed"
-                    : unread > 0 ? "Open"
-                    : "Pending";
+                    statusLower switch
+                    {
+                        "open" => "Open",
+                        "pending" => "Pending",
+                        "closed" => "Closed",
+                        _ => (contact.IsArchived || !contact.IsActive) ? "Closed" : "Open"
+                    };
 
-                // Assignment
                 var assignedUserId = contact.AssignedAgentId;
                 var assignedUserIdString = assignedUserId?.ToString();
+
                 var isAssignedToMe =
                     currentUserId.HasValue &&
                     assignedUserId.HasValue &&
                     assignedUserId.Value == currentUserId.Value;
 
-                // Mode: if we have ChatSessionState, use that; else infer from last message.
-                string mode = "automation";
-                if (sessionByContactId.TryGetValue(agg.ContactId, out var session))
+                string? assignedUserName = null;
+                if (assignedUserId.HasValue && assignedUsersById.TryGetValue(assignedUserId.Value, out var nm))
+                    assignedUserName = nm;
+
+                var mode = "automation";
+                if (sessionByContactId.TryGetValue(row.ContactId, out var session))
                 {
-                    // Assuming session.Mode is an enum or string; normalize to lower-case string.
                     mode = session.Mode?.ToString().ToLowerInvariant() ?? "automation";
                 }
                 else if (lastMsg != null)
                 {
-                    // Fallback: if last message is an outgoing "agent" message
-                    // we treat it as agent mode; otherwise automation.
-                    // (This depends on how you store Source; adjust later.)
-                    if (!lastMsg.IsIncoming && string.Equals(lastMsg.Source, "agent", StringComparison.OrdinalIgnoreCase))
+                    if (!lastMsg.IsIncoming &&
+                        string.Equals(lastMsg.Source, "agent", StringComparison.OrdinalIgnoreCase))
                     {
                         mode = "agent";
                     }
                 }
 
-                // For v1 we don't yet decode exact SourceType / SourceName from Campaign / AutoReply / CTAFlow.
-                // We'll set "Unknown" and fill this later when we wire analytics.
-                var dto = new ChatInboxConversationDto
+                items.Add(new ChatInboxConversationDto
                 {
-                    // For v1 we use the ContactId as conversation id.
-                    Id = agg.ContactId.ToString(),
-
-                    ContactId = agg.ContactId,
+                    Id = row.ContactId.ToString(),
+                    ContactId = row.ContactId,
                     ContactName = string.IsNullOrWhiteSpace(contact.Name)
                         ? (contact.ProfileName ?? contact.PhoneNumber)
                         : contact.Name,
                     ContactPhone = contact.PhoneNumber,
 
                     LastMessagePreview = preview,
-                    LastMessageAt = agg.LastMessageAt,
+                    LastMessageAt = row.LastMessageAt,
 
                     UnreadCount = unread,
                     Status = status,
 
-                    // NumberId/NumberLabel: for now we leave empty.
-                    // Once WhatsApp phone mapping is wired, we can fill these.
                     NumberId = string.Empty,
                     NumberLabel = string.Empty,
 
                     Within24h = within24h,
 
                     AssignedToUserId = assignedUserIdString,
-                    AssignedToUserName = null,  // will be filled in v2 by joining Users table
+                    AssignedToUserName = assignedUserName,
                     IsAssignedToMe = isAssignedToMe,
 
                     Mode = mode,
                     SourceType = "Unknown",
                     SourceName = null,
 
-                    FirstSeenAt = agg.FirstSeenAt,
-                    TotalMessages = agg.TotalMessages,
+                    FirstSeenAt = row.FirstSeenAt,
+                    LastInboundAt = lastInboundAt,
+                    LastOutboundAt = lastOutboundAt,
+                    TotalMessages = row.TotalMessages,
 
-                    LastAgentReplyAt = null,     // can be filled later via MessageLogs aggregate
-                    LastAutomationAt = null      // same as above
-                };
-
-                results.Add(dto);
+                    LastAgentReplyAt = null,
+                    LastAutomationAt = null
+                });
             }
 
-            // --- 7) Apply tab filters ("live", "history", "unassigned", "my") + number + search ---
-
-            IEnumerable<ChatInboxConversationDto> filtered = results;
-
-            if (!string.IsNullOrWhiteSpace(filter.Tab))
+            items.Sort((a, b) =>
             {
-                var tab = filter.Tab.ToLowerInvariant();
-                switch (tab)
+                var aUnread = a.UnreadCount > 0;
+                var bUnread = b.UnreadCount > 0;
+
+                if (aUnread && !bUnread) return -1;
+                if (!aUnread && bUnread) return 1;
+
+                return b.LastMessageAt.CompareTo(a.LastMessageAt);
+            });
+
+            string? nextCursor = null;
+            if (hasMore && items.Count > 0)
+            {
+                var last = pageRows.Last();
+                nextCursor = CursorCodec.Encode(new ConversationsCursor
                 {
-                    case "live":
-                        filtered = filtered.Where(c => c.Within24h);
-                        break;
-                    case "history":
-                        filtered = filtered.Where(c => !c.Within24h);
-                        break;
-                    // "unassigned" and "my" were already mapped to flags in the controller,
-                    // but we double-check here too (harmless).
-                    case "unassigned":
-                        filtered = filtered.Where(c => string.IsNullOrEmpty(c.AssignedToUserId));
-                        break;
-                    case "my":
-                        if (currentUserId.HasValue)
-                        {
-                            filtered = filtered.Where(c => c.IsAssignedToMe);
-                        }
-                        break;
-                    default:
-                        break;
-                }
+                    LastMessageAtUtc = DateTime.SpecifyKind(last.LastMessageAt, DateTimeKind.Utc),
+                    ContactId = last.ContactId
+                });
             }
 
-            if (filter.OnlyUnassigned)
+            return new PagedResultDto<ChatInboxConversationDto>
             {
-                filtered = filtered.Where(c => string.IsNullOrEmpty(c.AssignedToUserId));
-            }
-
-            if (filter.OnlyAssignedToMe && currentUserId.HasValue)
-            {
-                filtered = filtered.Where(c => c.IsAssignedToMe);
-            }
-
-            // NumberId filter: for now we don't yet know which number a conversation belongs to.
-            // Once MessageLogs have NumberId / PhoneNumberId we can populate dto.NumberId and filter here.
-            if (!string.IsNullOrWhiteSpace(filter.NumberId)
-                && !string.Equals(filter.NumberId, "all", StringComparison.OrdinalIgnoreCase))
-            {
-                filtered = filtered.Where(c => string.Equals(c.NumberId, filter.NumberId, StringComparison.OrdinalIgnoreCase));
-            }
-
-            // Search: name, phone, last message preview (case-insensitive)
-            if (!string.IsNullOrWhiteSpace(filter.SearchTerm))
-            {
-                var term = filter.SearchTerm.Trim();
-                var termLower = term.ToLowerInvariant();
-
-                filtered = filtered.Where(c =>
-                    (!string.IsNullOrEmpty(c.ContactName) && c.ContactName.ToLowerInvariant().Contains(termLower)) ||
-                    (!string.IsNullOrEmpty(c.ContactPhone) && c.ContactPhone.Contains(term)) ||
-                    (!string.IsNullOrEmpty(c.LastMessagePreview) && c.LastMessagePreview.ToLowerInvariant().Contains(termLower)));
-            }
-
-            // Final cap (defensive)
-            var finalList = filtered
-                .OrderByDescending(c => c.LastMessageAt)
-                .Take(limit)
-                .ToList();
-
-            return finalList;
+                Items = items,
+                HasMore = hasMore,
+                NextCursor = nextCursor
+            };
         }
 
-        // 💬 Messages for a single conversation (center pane)
-        // inside ChatInboxQueryService
+        // =============================================================
+        // ✅ SECURED MESSAGE METHODS (use these from controllers)
+        // =============================================================
 
-        // 💬 Messages for a single conversation (center pane)
-        // inside ChatInboxQueryService
+        public async Task<IReadOnlyList<ChatInboxMessageDto>> GetMessagesForConversationAsync(
+            Guid businessId,
+            string contactPhone,
+            int limit,
+            Guid currentUserId,
+            CancellationToken ct = default)
+        {
+            var page = await GetMessagesPageForConversationByPhoneAsync(businessId, contactPhone, limit, null, currentUserId, ct)
+                .ConfigureAwait(false);
+
+            return page.Items;
+        }
+
+        public async Task<IReadOnlyList<ChatInboxMessageDto>> GetMessagesForConversationByContactIdAsync(
+            Guid businessId,
+            Guid contactId,
+            int limit,
+            Guid currentUserId,
+            CancellationToken ct = default)
+        {
+            var page = await GetMessagesPageForConversationByContactIdAsync(businessId, contactId, limit, null, currentUserId, ct)
+                .ConfigureAwait(false);
+
+            return page.Items;
+        }
+
+        public Task<PagedResultDto<ChatInboxMessageDto>> GetMessagesPageForConversationByPhoneAsync(
+            Guid businessId,
+            string contactPhone,
+            int limit,
+            string? cursor,
+            Guid currentUserId,
+            CancellationToken ct = default)
+        {
+            // Resolve contactId then delegate
+            return GetMessagesPageForConversationByPhoneInternalAsync(businessId, contactPhone, limit, cursor, currentUserId, ct);
+        }
+
+        public Task<PagedResultDto<ChatInboxMessageDto>> GetMessagesPageForConversationByContactIdAsync(
+            Guid businessId,
+            Guid contactId,
+            int limit,
+            string? cursor,
+            Guid currentUserId,
+            CancellationToken ct = default)
+        {
+            return GetMessagesPageForConversationByContactIdInternalAsync(businessId, contactId, limit, cursor, currentUserId, ct);
+        }
+
+        // =============================================================
+        // ⚠️ LEGACY MESSAGE METHODS (keep for compatibility only)
+        // These DO NOT enforce restricted mode. Prefer secured overloads.
+        // =============================================================
 
         public async Task<IReadOnlyList<ChatInboxMessageDto>> GetMessagesForConversationAsync(
             Guid businessId,
@@ -343,20 +475,66 @@ namespace xbytechat.api.Features.ChatInbox.Services
             int limit,
             CancellationToken ct = default)
         {
+            var page = await GetMessagesPageForConversationByPhoneAsync(businessId, contactPhone, limit, null, ct)
+                .ConfigureAwait(false);
+
+            return page.Items;
+        }
+
+        public async Task<IReadOnlyList<ChatInboxMessageDto>> GetMessagesForConversationByContactIdAsync(
+            Guid businessId,
+            Guid contactId,
+            int limit,
+            CancellationToken ct = default)
+        {
+            var page = await GetMessagesPageForConversationByContactIdAsync(businessId, contactId, limit, null, ct)
+                .ConfigureAwait(false);
+
+            return page.Items;
+        }
+
+        public Task<PagedResultDto<ChatInboxMessageDto>> GetMessagesPageForConversationByPhoneAsync(
+            Guid businessId,
+            string contactPhone,
+            int limit,
+            string? cursor,
+            CancellationToken ct = default)
+        {
+            // Legacy behavior: no visibility enforcement (Shared-like)
+            return GetMessagesPageForConversationByPhoneInternalAsync(businessId, contactPhone, limit, cursor, null, ct);
+        }
+
+        public Task<PagedResultDto<ChatInboxMessageDto>> GetMessagesPageForConversationByContactIdAsync(
+            Guid businessId,
+            Guid contactId,
+            int limit,
+            string? cursor,
+            CancellationToken ct = default)
+        {
+            // Legacy behavior: no visibility enforcement (Shared-like)
+            return GetMessagesPageForConversationByContactIdInternalAsync(businessId, contactId, limit, cursor, null, ct);
+        }
+
+        // =============================================================
+        // Internal implementations with optional enforcement
+        // =============================================================
+
+        private async Task<PagedResultDto<ChatInboxMessageDto>> GetMessagesPageForConversationByPhoneInternalAsync(
+            Guid businessId,
+            string contactPhone,
+            int limit,
+            string? cursor,
+            Guid? currentUserId,
+            CancellationToken ct)
+        {
             if (businessId == Guid.Empty)
                 throw new ArgumentException("BusinessId must be a non-empty GUID.", nameof(businessId));
 
             if (string.IsNullOrWhiteSpace(contactPhone))
                 throw new ArgumentException("Contact phone is required.", nameof(contactPhone));
 
-            if (limit <= 0)
-                limit = 50;
-            if (limit > 500)
-                limit = 500;
-
             var trimmedPhone = contactPhone.Trim();
 
-            // 🟢 Step 1: resolve ContactId from phone number for this business
             var contactId = await _db.Contacts
                 .AsNoTracking()
                 .Where(c => c.BusinessId == businessId && c.PhoneNumber == trimmedPhone)
@@ -364,59 +542,219 @@ namespace xbytechat.api.Features.ChatInbox.Services
                 .FirstOrDefaultAsync(ct)
                 .ConfigureAwait(false);
 
-            if (contactId == null)
+            if (!contactId.HasValue)
             {
-                // No such contact → no messages
-                return Array.Empty<ChatInboxMessageDto>();
+                return new PagedResultDto<ChatInboxMessageDto>
+                {
+                    Items = Array.Empty<ChatInboxMessageDto>(),
+                    HasMore = false,
+                    NextCursor = null
+                };
             }
 
-            // 🟢 Step 2: fetch all messages for this contact (both directions)
-            var query = _db.MessageLogs
-                .AsNoTracking()
-                .Where(x => x.BusinessId == businessId &&
-                            x.ContactId == contactId.Value);
+            return await GetMessagesPageForConversationByContactIdInternalAsync(
+                    businessId, contactId.Value, limit, cursor, currentUserId, ct)
+                .ConfigureAwait(false);
+        }
 
-            // Newest first
-            query = query
+        private async Task<PagedResultDto<ChatInboxMessageDto>> GetMessagesPageForConversationByContactIdInternalAsync(
+            Guid businessId,
+            Guid contactId,
+            int limit,
+            string? cursor,
+            Guid? currentUserId,
+            CancellationToken ct)
+        {
+            if (businessId == Guid.Empty)
+                throw new ArgumentException("BusinessId must be a non-empty GUID.", nameof(businessId));
+
+            if (contactId == Guid.Empty)
+                throw new ArgumentException("ContactId must be a non-empty GUID.", nameof(contactId));
+
+            if (limit <= 0) limit = 50;
+            if (limit > 200) limit = 200;
+
+            // ✅ Visibility enforcement for messages in Restricted mode
+            await EnsureCanViewConversationAsync(businessId, contactId, currentUserId, ct)
+                .ConfigureAwait(false);
+
+            var cursorObj = CursorCodec.Decode<MessagesCursor>(cursor);
+
+            var q = _db.MessageLogs
+                .AsNoTracking()
+                .Where(x => x.BusinessId == businessId && x.ContactId == contactId);
+
+            if (cursorObj != null && cursorObj.MessageId != Guid.Empty)
+            {
+                var inst = DateTime.SpecifyKind(cursorObj.InstantUtc, DateTimeKind.Utc);
+                var mid = cursorObj.MessageId;
+
+                q = q.Where(x =>
+                    (x.SentAt ?? x.CreatedAt) < inst ||
+                    ((x.SentAt ?? x.CreatedAt) == inst && x.Id.CompareTo(mid) < 0));
+            }
+
+            var rows = await q
                 .OrderByDescending(x => x.SentAt ?? x.CreatedAt)
                 .ThenByDescending(x => x.Id)
-                .Take(limit);
-
-            var rows = await query
+                .Take(limit + 1)
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
 
-            // Map to DTOs (newest → oldest; UI can reverse if needed).
-            var list = rows
-                .Select(x =>
+            var hasMore = rows.Count > limit;
+            var pageRows = rows.Take(limit).ToList();
+
+            var items = pageRows.Select(x =>
+            {
+                var instant = x.SentAt ?? x.CreatedAt;
+                var utcInstant = instant.Kind == DateTimeKind.Utc ? instant : instant.ToUniversalTime();
+
+                return new ChatInboxMessageDto
                 {
-                    var instant = x.SentAt ?? x.CreatedAt;
-                    var utcInstant = instant.Kind == DateTimeKind.Utc
-                        ? instant
-                        : instant.ToUniversalTime();
+                    Id = x.Id,
+                    Direction = x.IsIncoming ? "in" : "out",
+                    Channel = "whatsapp",
+                    Text = x.RenderedBody ?? x.MessageContent ?? string.Empty,
+                    SentAtUtc = utcInstant,
+                    Status = x.Status,
+                    ErrorMessage = x.ErrorMessage
+                };
+            }).ToList();
 
-                    return new ChatInboxMessageDto
-                    {
-                        Id = x.Id,
+            string? nextCursor = null;
+            if (hasMore && pageRows.Count > 0)
+            {
+                var last = pageRows.Last();
+                var instant = last.SentAt ?? last.CreatedAt;
+                var utcInstant = instant.Kind == DateTimeKind.Utc ? instant : instant.ToUniversalTime();
 
-                        // ✅ Use MessageLog.IsIncoming to decide bubble side
-                        Direction = x.IsIncoming ? "in" : "out",
+                nextCursor = CursorCodec.Encode(new MessagesCursor
+                {
+                    InstantUtc = utcInstant,
+                    MessageId = last.Id
+                });
+            }
 
-                        Channel = "whatsapp",
-
-                        // Prefer rendered template body when available
-                        Text = x.RenderedBody ?? x.MessageContent ?? string.Empty,
-
-                        SentAtUtc = utcInstant,
-                        Status = x.Status,
-                        ErrorMessage = x.ErrorMessage
-                    };
-                })
-                .ToList();
-
-            return list;
+            return new PagedResultDto<ChatInboxMessageDto>
+            {
+                Items = items,
+                HasMore = hasMore,
+                NextCursor = nextCursor
+            };
         }
 
+        private async Task EnsureCanViewConversationAsync(
+            Guid businessId,
+            Guid contactId,
+            Guid? currentUserId,
+            CancellationToken ct)
+        {
+            // Shared mode => everyone in business can view.
+            var visibility = await _db.Businesses
+                .AsNoTracking()
+                .Where(b => b.Id == businessId)
+                .Select(b => (InboxVisibilityMode?)b.InboxVisibilityMode)
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false) ?? InboxVisibilityMode.SharedInInbox;
 
+            if (visibility != InboxVisibilityMode.AssignedOnly)
+                return;
+
+            if (!currentUserId.HasValue || currentUserId.Value == Guid.Empty)
+                throw new UnauthorizedAccessException("Restricted inbox: user context required.");
+
+            var canSeeAll = await CanSeeAllInRestrictedModeAsync(businessId, currentUserId.Value, ct)
+                .ConfigureAwait(false);
+
+            if (canSeeAll)
+                return;
+
+            // ✅ Must be assigned to this user
+            var allowed = await _db.Contacts
+                .AsNoTracking()
+                .AnyAsync(c =>
+                    c.BusinessId == businessId &&
+                    c.Id == contactId &&
+                    c.AssignedAgentId == currentUserId.Value, ct)
+                .ConfigureAwait(false);
+
+            if (!allowed)
+                throw new UnauthorizedAccessException("Restricted inbox: you are not assigned to this conversation.");
+        }
+
+        // ===========================
+        // Restricted-mode helpers
+        // ===========================
+
+        private static bool IsPrivilegedRoleName(string? roleName)
+        {
+            var role = (roleName ?? string.Empty).Trim().ToLowerInvariant();
+            return role is "admin" or "business" or "superadmin" or "partner";
+        }
+
+        private async Task<bool> CanSeeAllInRestrictedModeAsync(Guid businessId, Guid userId, CancellationToken ct)
+        {
+            var userRow = await _db.Users
+                .AsNoTracking()
+                .Where(u => u.Id == userId && u.BusinessId == businessId && !u.IsDeleted && u.Status == "Active")
+                .Select(u => new
+                {
+                    u.RoleId,
+                    RoleName = u.Role != null ? u.Role.Name : null
+                })
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+
+            if (userRow == null) return false;
+
+            if (IsPrivilegedRoleName(userRow.RoleName))
+                return true;
+
+            return await HasPermissionAsync(userId, InboxAssignPermissionCode, ct).ConfigureAwait(false);
+        }
+
+        private async Task<bool> HasPermissionAsync(Guid userId, string permissionCode, CancellationToken ct)
+        {
+            var code = (permissionCode ?? string.Empty).Trim().ToUpperInvariant();
+            if (code.Length == 0) return false;
+
+            var permissionId = await _db.Permissions
+                .AsNoTracking()
+                .Where(p => p.Code != null && p.Code.ToUpper() == code)
+                .Select(p => (Guid?)p.Id)
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+
+            if (!permissionId.HasValue) return false;
+
+            var direct = await _db.UserPermissions
+                .AsNoTracking()
+                .AnyAsync(up =>
+                    up.UserId == userId &&
+                    up.PermissionId == permissionId.Value &&
+                    up.IsGranted &&
+                    !up.IsRevoked, ct)
+                .ConfigureAwait(false);
+
+            if (direct) return true;
+
+            var roleId = await _db.Users
+                .AsNoTracking()
+                .Where(u => u.Id == userId)
+                .Select(u => u.RoleId)
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+
+            if (!roleId.HasValue) return false;
+
+            return await _db.RolePermissions
+                .AsNoTracking()
+                .AnyAsync(rp =>
+                    rp.RoleId == roleId.Value &&
+                    rp.PermissionId == permissionId.Value &&
+                    rp.IsActive &&
+                    !rp.IsRevoked, ct)
+                .ConfigureAwait(false);
+        }
     }
 }

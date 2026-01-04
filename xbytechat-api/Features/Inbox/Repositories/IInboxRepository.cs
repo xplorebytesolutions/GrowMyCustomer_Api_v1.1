@@ -8,13 +8,19 @@ namespace xbytechat.api.Features.Inbox.Repositories
     {
         Task<List<MessageLog>> GetConversationAsync(Guid businessId, string userPhone, string contactPhone, int limit = 50);
         Task<MessageLog?> GetLastMessageAsync(Guid businessId, string userPhone, string contactPhone);
+
         Task AddMessageAsync(MessageLog message);
         Task SaveChangesAsync();
+
         Task<List<MessageLog>> GetMessagesByContactIdAsync(Guid businessId, Guid contactId);
+
         Task<Dictionary<Guid, int>> GetUnreadMessageCountsAsync(Guid businessId);
         Task MarkMessagesAsReadAsync(Guid businessId, Guid contactId);
+
         Task<Dictionary<Guid, int>> GetUnreadCountsForUserAsync(Guid businessId, Guid userId);
 
-
+        // ✅ Step 3: Soft idempotency helper
+        // Used to prevent duplicate inbound inserts when webhook retries arrive.
+        Task<MessageLog?> FindByProviderMessageIdAsync(Guid businessId, string providerMessageId);
     }
 }

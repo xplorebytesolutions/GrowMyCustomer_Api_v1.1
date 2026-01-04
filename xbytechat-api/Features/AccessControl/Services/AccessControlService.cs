@@ -1,55 +1,4 @@
-﻿//using Microsoft.EntityFrameworkCore;
-//using System.Collections.Generic;
-//using System.Security.Claims;
-//using System.Threading.Tasks;
-
-//using xbytechat.api.Features.AccessControl.Models;
-
-//namespace xbytechat.api.Features.AccessControl.Services
-//{
-//    public class AccessControlService : IAccessControlService
-//    {
-//        private readonly AppDbContext _context;
-
-//        public AccessControlService(AppDbContext context)
-//        {
-//            _context = context;
-//        }
-
-//        public async Task<IEnumerable<Permission>> GetAllPermissionsAsync()
-//        {
-//            return await _context.Permissions
-//                .AsNoTracking()
-//                .Where(p => p.IsActive)
-//                .ToListAsync();
-//        }
-//        //public async Task<IEnumerable<Permission>> GetPermissionsAsync(Guid userId)
-//        //{
-//        //    // First, check if the user has direct permissions
-//        //    var userPermissions = await _context.UserPermissions
-//        //        .Where(up => up.UserId == userId && up.IsGranted && !up.IsRevoked)
-//        //        .Select(up => up.Permission)
-//        //        .Where(p => p.IsActive)
-//        //        .ToListAsync();
-
-//        //    // If no direct permissions, fall back to role permissions
-//        //    if (!userPermissions.Any())
-//        //    {
-//        //        userPermissions = await _context.RolePermissions
-//        //            .Where(rp => rp.Role.Users.Any(u => u.Id == userId) && rp.IsActive && !rp.IsRevoked)
-//        //            .Select(rp => rp.Permission)
-//        //            .Where(p => p.IsActive)
-//        //            .ToListAsync();
-//        //    }
-
-//        //    return userPermissions;
-//        //}
-       
-        
-       
-//    }
-//}
-
+﻿
 
 using System;
 using System.Collections.Generic;
@@ -159,21 +108,49 @@ namespace xbytechat.api.Features.AccessControl.Services
 
         public bool HasPermission(ClaimsPrincipal user, string requiredPermission)
         {
-            // 🚀 Bypass: SuperAdmin always passes
-            //var roleClaim = user.Claims.FirstOrDefault(c => c.Type == ClaimTypes.Role)?.Value;
+            if (user == null || string.IsNullOrWhiteSpace(requiredPermission))
+                return false;
+
+            // 🚀 Bypass for top roles
             var roleClaim = user.Claims.FirstOrDefault(c =>
                 c.Type == ClaimTypes.Role || c.Type.Equals("role", StringComparison.OrdinalIgnoreCase)
             )?.Value;
 
-            if (!string.IsNullOrEmpty(roleClaim) && roleClaim.Equals("superadmin", StringComparison.OrdinalIgnoreCase))
-                return true;
+            if (!string.IsNullOrWhiteSpace(roleClaim))
+            {
+                if (roleClaim.Equals("superadmin", StringComparison.OrdinalIgnoreCase) ||
+                    roleClaim.Equals("admin", StringComparison.OrdinalIgnoreCase) ||
+                    roleClaim.Equals("partner", StringComparison.OrdinalIgnoreCase) ||
+                    roleClaim.Equals("reseller", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
 
-            var perms = user.Claims
-                .Where(c => c.Type == "permissions")
-                .Select(c => c.Value)
-                .ToList();
+            var required = requiredPermission.Trim();
 
-            return perms.Contains(requiredPermission);
+            // ✅ Collect permissions from claim(s), supporting CSV and alternate claim keys
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            void AddCsv(string? csv)
+            {
+                if (string.IsNullOrWhiteSpace(csv)) return;
+
+                foreach (var p in csv.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var code = p.Trim();
+                    if (!string.IsNullOrWhiteSpace(code))
+                        set.Add(code);
+                }
+            }
+
+            // primary: "permissions" (your JWT uses this)
+            foreach (var c in user.Claims.Where(c => c.Type == "permissions"))
+                AddCsv(c.Value);
+
+            // fallback: "permission" (rare, but avoids break if someone changes token later)
+            var alt = user.Claims.FirstOrDefault(c => c.Type == "permission")?.Value;
+            AddCsv(alt);
+
+            return set.Contains(required);
         }
 
         /// <summary>

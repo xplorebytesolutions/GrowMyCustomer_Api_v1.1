@@ -65,8 +65,44 @@ namespace xbytechat.api.Features.CampaignModule.Controllers
             });
         }
 
-        // === Canonical sample CSV (you already made this canonical) ===
-        // GET /api/campaigns/{campaignId}/csv-sample/sample
+        // GET /api/campaigns/{campaignId}/csv-sample
+        // Generates a dynamic sample based on the actual campaign schema
+        [HttpGet]
+        public async Task<IActionResult> GetDynamicSample([FromRoute] Guid campaignId, CancellationToken ct = default)
+        {
+            var businessId = User.GetBusinessId();
+            if (businessId == Guid.Empty) return Unauthorized();
+
+            IReadOnlyList<string> headers;
+            try
+            {
+                headers = await _schemaBuilder.BuildAsync(businessId, campaignId, ct);
+            }
+            catch (KeyNotFoundException)
+            {
+                return NotFound();
+            }
+
+            var sb = new StringBuilder();
+            sb.AppendLine(string.Join(",", headers));
+
+            // Create a dummy row
+            var row = new List<string>();
+            foreach (var h in headers)
+            {
+                var lower = h.ToLowerInvariant();
+                if (lower.Contains("phone")) row.Add("1234567890");
+                else if (lower.Contains("parameter")) row.Add("value");
+                else if (lower.Contains("url")) row.Add("https://example.com");
+                else row.Add("abc");
+            }
+            sb.AppendLine(string.Join(",", row));
+
+            var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+            return File(bytes, "text/csv", $"sample_{campaignId}.csv");
+        }
+
+        // GET /api/campaigns/{campaignId}/csv-sample/sample (Legacy/Generic)
         [HttpGet("sample")]
         public IActionResult DownloadSample([FromQuery] int bodyParams = 2, [FromQuery] int headerTextParams = 1, [FromQuery] int urlButtons = 1)
         {

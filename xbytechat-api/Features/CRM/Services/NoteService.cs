@@ -1,19 +1,17 @@
 ﻿using Microsoft.EntityFrameworkCore;
-using xbytechat.api.Features.CRM.Models;
 using xbytechat.api.Features.CRM.Dtos;
 using xbytechat.api.Features.CRM.Interfaces;
 using xbytechat.api.Features.CRM.Mappers;
-using xbytechat.api.Features.CRM.Timelines.Services;
 using xbytechat.api.Features.CRM.Timelines.DTOs;
+using xbytechat.api.Features.CRM.Timelines.Services;
 
 namespace xbytechat.api.Features.CRM.Services
 {
     public class NoteService : INoteService
     {
         private readonly AppDbContext _db;
-        private readonly ITimelineService _timelineService; // ✅ Injected Timeline Service
+        private readonly ITimelineService _timelineService;
 
-        // ✅ Constructor: Inject AppDbContext + TimelineService
         public NoteService(AppDbContext db, ITimelineService timelineService)
         {
             _db = db;
@@ -23,6 +21,16 @@ namespace xbytechat.api.Features.CRM.Services
         // 📝 Add a new Note + Log into LeadTimeline
         public async Task<NoteDto> AddNoteAsync(Guid businessId, NoteDto dto)
         {
+            if (dto == null) throw new ArgumentNullException(nameof(dto));
+
+            // ✅ Content is the real important field
+            dto.Content = (dto.Content ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(dto.Content))
+                throw new ArgumentException("Note content is required.");
+
+            // ✅ Title is optional → derive from Content if missing
+            dto.Title = NormalizeTitle(dto.Title, dto.Content);
+
             // 1️⃣ Map incoming DTO to Note entity
             var note = NoteMapper.MapToEntity(dto, businessId);
 
@@ -37,13 +45,13 @@ namespace xbytechat.api.Features.CRM.Services
                 {
                     await _timelineService.LogNoteAddedAsync(new CRMTimelineLogDto
                     {
-                        ContactId = dto.ContactId.Value,       // ➔ Which contact the note is related to
-                        BusinessId = businessId,               // ➔ Which business created this
-                        EventType = "NoteAdded",                // ➔ Timeline event type
-                        Description = $"📝 Note added: {dto.Title ?? "(Untitled)"}", // ➔ Friendly description
-                        ReferenceId = note.Id,                  // ➔ Link back to Note Id
-                        CreatedBy = dto.CreatedBy,              // ➔ Who created it
-                        Timestamp = DateTime.UtcNow             // ➔ When created
+                        ContactId = dto.ContactId.Value,
+                        BusinessId = businessId,
+                        EventType = "NoteAdded",
+                        Description = $"📝 Note added: {dto.Title ?? "(Untitled)"}",
+                        ReferenceId = note.Id,
+                        CreatedBy = dto.CreatedBy, // ⚠️ ideally override from claims in controller
+                        Timestamp = DateTime.UtcNow
                     });
                 }
                 catch (Exception ex)
@@ -81,28 +89,55 @@ namespace xbytechat.api.Features.CRM.Services
         // ✏️ Update an existing Note
         public async Task<bool> UpdateNoteAsync(Guid businessId, Guid noteId, NoteDto dto)
         {
+            if (dto == null) throw new ArgumentNullException(nameof(dto));
+
             var note = await _db.Notes.FirstOrDefaultAsync(n => n.Id == noteId && n.BusinessId == businessId);
             if (note == null) return false;
 
-            note.Title = dto.Title;
+            // ✅ Content is required
+            dto.Content = (dto.Content ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(dto.Content))
+                throw new ArgumentException("Note content is required.");
+
+            // ✅ Title optional: only update if provided, else derive from Content
+            var normalizedTitle = NormalizeTitle(dto.Title, dto.Content);
+            note.Title = normalizedTitle;
+
             note.Content = dto.Content;
             note.IsPinned = dto.IsPinned;
             note.IsInternal = dto.IsInternal;
-            note.EditedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc); // Always UTC timestamp
+            note.EditedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
 
             await _db.SaveChangesAsync();
             return true;
         }
 
-        // 🗑️ Soft delete (actually remove) a Note
+        // 🗑️ HARD delete (actual remove) a Note
         public async Task<bool> DeleteNoteAsync(Guid businessId, Guid noteId)
         {
             var note = await _db.Notes.FirstOrDefaultAsync(n => n.Id == noteId && n.BusinessId == businessId);
             if (note == null) return false;
 
-            _db.Notes.Remove(note);
+            _db.Notes.Remove(note); // ✅ Hard delete
             await _db.SaveChangesAsync();
             return true;
+        }
+
+        // ----------------- helpers -----------------
+
+        private static string? NormalizeTitle(string? title, string content)
+        {
+            var t = (title ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(t))
+                return t;
+
+            // derive from content
+            var c = (content ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(c))
+                return null;
+
+            const int max = 60;
+            return c.Length <= max ? c : (c.Substring(0, max) + "…");
         }
     }
 }

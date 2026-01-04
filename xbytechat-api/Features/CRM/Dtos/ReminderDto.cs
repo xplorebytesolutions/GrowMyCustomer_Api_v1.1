@@ -35,5 +35,7 @@ namespace xbytechat.api.Features.CRM.Dtos
         public DateTime? UpdatedAt { get; set; }
 
         public DateTime? CompletedAt { get; set; }
+
+        public string? CreatedBy { get; set; }
     }
 }

@@ -50,7 +50,7 @@ namespace xbytechat.api.Features.Audiences.Services
             var batchId = Guid.NewGuid();
             var now = DateTime.UtcNow;
 
-            // Pre-create batch
+            // Pre-create batch // need to Reconfirm
             _db.CsvBatches.Add(new Features.CampaignModule.Models.CsvBatch
             {
                 Id = batchId,

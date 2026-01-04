@@ -101,9 +101,12 @@ using xbytechat.api.Features.CRM.Interfaces;
 using xbytechat.api.Features.CRM.Services;
 using xbytechat.api.Features.CRM.Timelines.Services;
 using xbytechat.api.Features.ChatInbox.Services;
-using xbytechat.api.Features.CRM.Summary.Interfaces;
-using xbytechat.api.Features.CRM.Summary.Services;
-
+using xbytechat.api.Features.TeamStaff.Services;
+using xbytechat.api.Features.AccessControl.BusinessRoles.Services;
+using xbytechat.api.Features.AccessControl.BusinessRolePermissions.Services;
+using xbytechat.api.Infrastructure.Security;
+using xbytechat.api.Features.CustomFields.Services;
+using xbytechat.api.Infrastructure.Swagger;
 
 
 var builder = WebApplication.CreateBuilder(args);
@@ -170,6 +173,22 @@ builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 #endregion
 
+
+// Policy not implemented yet
+#region 🔷 Policies
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy(Policies.AdminOrOwner, policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.RequireAssertion(ctx =>
+        {
+            var user = ctx.User;
+            return user.IsAdminLike() || user.IsBusinessOwnerLike();
+        });
+    });
+});
+#endregion
 #region 🔷 Messaging Services & WhatsApp
 
 builder.Services.AddHttpClient<IMessageService, MessageService>();
@@ -178,6 +197,8 @@ builder.Services.AddScoped<IMessageStatusService, MessageStatusService>();
 builder.Services.AddScoped<ITemplateMessageSender, TemplateMessageSender>();
 #endregion
 builder.Services.AddHttpClient();
+
+
 #region 🔷 Payload Builders
 builder.Services.AddScoped<xbytechat.api.PayloadBuilders.IWhatsAppPayloadBuilder, xbytechat.api.PayloadBuilders.TextMessagePayloadBuilder>();
 builder.Services.AddScoped<xbytechat.api.PayloadBuilders.IWhatsAppPayloadBuilder, xbytechat.api.PayloadBuilders.ImageMessagePayloadBuilder>();
@@ -194,6 +215,8 @@ builder.Services.AddScoped<ITagService, TagService>();
 builder.Services.AddScoped<IReminderService, ReminderService>();
 builder.Services.AddScoped<INoteService, NoteService>();
 builder.Services.AddScoped<ITimelineService, TimelineService>();
+builder.Services.AddScoped<IContactTagService, ContactTagService>();
+builder.Services.AddScoped<ICustomFieldsService, CustomFieldsService>();
 #endregion
 
 #region 🔷 Billing 
@@ -223,6 +246,8 @@ builder.Services.AddScoped<ICampaignDispatchPlannerService, CampaignDispatchPlan
 builder.Services.AddScoped<ICsvExportService, CsvExportService>();
 
 builder.Services.AddScoped<ICampaignDryRunService, CampaignDryRunService>();
+builder.Services.AddScoped<ICampaignRetargetService, CampaignRetargetService>();
+
 // API
 builder.Services.AddScoped<ICustomApiService, CustomApiService>();
 // CSV ingest
@@ -230,6 +255,7 @@ builder.Services.AddScoped<CampaignCsvSchemaBuilder>();
 builder.Services.AddScoped<ICsvBatchService, CsvBatchService>();
 builder.Services.AddScoped<IVariableResolver, VariableResolver>();
 builder.Services.AddScoped<ICampaignMaterializer, CampaignMaterializer>();
+builder.Services.AddScoped<ICampaignAudienceAttachmentService, CampaignAudienceAttachmentService>();
 builder.Services.AddScoped<ICampaignDispatcher, CampaignDispatcher>();
 builder.Services.AddScoped<IVariableMappingService, NoopVariableMappingService>();
 //builder.Services.AddScoped<IOutboundCampaignQueueService, NoopOutboundCampaignQueueService>();
@@ -269,7 +295,7 @@ builder.Services.AddHostedService<OutboxReaperWorker>();
 
 builder.Services.AddScoped<IWhatsAppWebhookService, WhatsAppWebhookService>();
 builder.Services.AddScoped<IWhatsAppWebhookDispatcher, WhatsAppWebhookDispatcher>();
-builder.Services.AddScoped<IStatusWebhookProcessor, StatusWebhookProcessor>();
+
 builder.Services.AddScoped<ITemplateWebhookProcessor, TemplateWebhookProcessor>();
 builder.Services.AddScoped<IMessageIdResolver, MessageIdResolver>();
 builder.Services.AddScoped<IClickWebhookProcessor, ClickWebhookProcessor>();
@@ -290,6 +316,12 @@ builder.Services.AddScoped<IPinnacleToMetaAdapter, PinnacleToMetaAdapter>();
 #region 🔷 Access Control & Permission
 builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddScoped<IAccessControlService, AccessControlService>();
+builder.Services.AddScoped<ITeamStaffService,TeamStaffService>();
+// BusinessesRole
+builder.Services.AddScoped<IBusinessRoleService, BusinessRoleService>();
+// BusinessesRolePermissions
+builder.Services.AddScoped<IBusinessRolePermissionsService, BusinessRolePermissionsService>();
+
 
 #endregion
 
@@ -402,12 +434,16 @@ builder.Services.AddScoped<IQuickReplyService, QuickReplyService>();
 // ChatInbox
 builder.Services.AddScoped<IChatInboxQueryService, ChatInboxQueryService>();
 builder.Services.AddScoped<IChatInboxCommandService, ChatInboxCommandService>();
+builder.Services.AddScoped<IChatInboxAssignmentService, ChatInboxAssignmentService>();
+
 #endregion
 
 #region 🔷 Access Control
 builder.Services.AddScoped<IPermissionService, PermissionService>();
 builder.Services.AddMemoryCache();
 builder.Services.AddScoped<IPermissionCacheService, PermissionCacheService>();
+builder.Services.AddScoped<IBusinessPermissionOverrideService, BusinessPermissionOverrideService>();
+
 #endregion
 
 #region 🔷 AutoReplyBuilder Module
@@ -548,7 +584,8 @@ builder.Services.AddSwaggerGen(options =>
         Version = "v1",
         Description = "API documentation for xByteChat project"
     });
-
+    
+    options.OperationFilter<FileUploadOperationFilter>();
     options.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
     {
         Description = "JWT Authorization header. Example: Bearer {token}",

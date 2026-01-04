@@ -1,0 +1,1810 @@
+Folder and File Content Report
+Root folder: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox
+Generated at: 04-01-2026 18:05:17.65
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\MakeDump.bat 
+====================================================== 
+ 
+@echo off
+REM This script will find relevant source files and output their names and contents into one file.
+REM The output file will be named [FolderName]_AllFileDump.txt.
+
+REM Get the current folder's name and set it as the output file name with the custom suffix
+for %%I in ("%cd%") do set "outputFile=%%~nI_AllFileDump.txt"
+
+REM Clear the output file to start fresh and write a small header
+> "%outputFile%" (
+    echo Folder and File Content Report
+    echo Root folder: %cd%
+    echo Generated at: %date% %time%
+)
+echo. >> "%outputFile%"
+
+REM NOTE:
+REM We now only dump RELEVANT text/code files (no binaries, no images, no node_modules, etc.)
+REM This keeps the file smaller and much easier to review.
+
+REM Loop through all relevant files in the current directory and subdirectories
+REM Extensions included: C#, JS/TS/React, JSON, config, SQL, Markdown, YAML
+for /R . %%F in (*.cs *.csproj *.jsx *.tsx *.js *.ts *.json *.config *.sql *.md *.yml *.yaml *.bat) do (
+
+    REM Skip some noisy folders by path substring (node_modules, bin, obj, .git, dist, .vs)
+    echo "%%F" | findstr /I /C:"\node_modules\" /C:"\bin\" /C:"\obj\" /C:"\.git\" /C:"\dist\" /C:"\.vs\" >nul
+    if errorlevel 1 (
+        echo ====================================================== >> "%outputFile%"
+        echo FILE: %%F >> "%outputFile%"
+        echo ====================================================== >> "%outputFile%"
+        echo. >> "%outputFile%"
+        type "%%F" >> "%outputFile%" 2>nul
+        echo. >> "%outputFile%"
+        echo. >> "%outputFile%"
+    )
+)
+
+echo Finished! All content has been extracted to %outputFile%
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Controllers\InboxController.cs 
+====================================================== 
+ 
+﻿using Microsoft.AspNetCore.Mvc;
+using System;
+using System.Threading.Tasks;
+using xbytechat.api.Features.Inbox.DTOs;
+using xbytechat.api.Features.Inbox.Services;
+using xbytechat.api.Helpers;
+using Microsoft.AspNetCore.Authorization;
+using xbytechat.api.Shared;
+using Microsoft.AspNetCore.SignalR;
+using xbytechat.api.Features.Inbox.Hubs;
+
+namespace xbytechat.api.Features.Inbox.Controllers
+{
+    [ApiController]
+    [Route("api/inbox")]
+    public class InboxController : ControllerBase
+    {
+        private readonly IInboxService _inboxService;
+        private readonly IHubContext<InboxHub> _hubContext; // ✅ for SignalR push
+        private readonly IUnreadCountService _unreadCountService;
+
+        public InboxController(
+            IInboxService inboxService,
+            IHubContext<InboxHub> hubContext,
+            IUnreadCountService unreadCountService)
+        {
+            _inboxService = inboxService;
+            _hubContext = hubContext;
+            _unreadCountService = unreadCountService;
+        }
+
+        /// <summary>
+        /// Send a new message from UI or system.
+        /// </summary>
+        [HttpPost("send")]
+        public async Task<IActionResult> SendMessage([FromBody] InboxMessageDto dto)
+        {
+            if (dto == null || string.IsNullOrWhiteSpace(dto.MessageBody))
+                return BadRequest("Message content is required.");
+
+            var result = await _inboxService.SaveOutgoingMessageAsync(dto);
+            return Ok(result);
+        }
+
+        /// <summary>
+        /// Receive a message from external source (e.g., WhatsApp webhook).
+        /// </summary>
+        [HttpPost("receive")]
+        public async Task<IActionResult> ReceiveMessage([FromBody] InboxMessageDto dto)
+        {
+            if (dto == null || string.IsNullOrWhiteSpace(dto.MessageBody))
+                return BadRequest("Incoming message content is required.");
+
+            // ✅ Ensure IDs are present
+            if (dto.BusinessId == Guid.Empty || dto.ContactId == Guid.Empty)
+                return BadRequest("BusinessId and ContactId are required.");
+
+            // 1) Persist the inbound message
+            var result = await _inboxService.SaveIncomingMessageAsync(dto);
+
+            // 2) Push the real-time message to everyone in this business
+            var groupName = $"business_{dto.BusinessId}";
+            await _hubContext.Clients.Group(groupName).SendAsync("ReceiveInboxMessage", new
+            {
+                contactId = dto.ContactId,
+                messageContent = dto.MessageBody,  // ✅ aligned with frontend
+                from = dto.RecipientPhone,
+                status = "Delivered",
+                sentAt = DateTime.UtcNow,
+                isIncoming = true
+            });
+
+            // 3) Tell clients to refresh their own unread snapshot (per-user)
+            //    We cannot compute per-user unread here (no userId in webhook context),
+            //    so we emit a refresh signal that clients handle by calling GET /inbox/unread-counts.
+            await _hubContext.Clients.Group(groupName)
+                .SendAsync("UnreadCountChanged", new { refresh = true });
+
+            return Ok(result);
+        }
+
+        /// <summary>
+        /// Fetch message history between agent and customer using business token + contactId.
+        /// </summary>
+        [HttpGet("messages")]
+        public async Task<IActionResult> GetMessagesByContact([FromQuery] Guid contactId)
+        {
+            if (contactId == Guid.Empty)
+                return BadRequest("ContactId is required.");
+
+            var businessId = User.GetBusinessId();
+            var messages = await _inboxService.GetMessagesByContactAsync(businessId, contactId);
+            return Ok(messages);
+        }
+
+        [HttpGet("conversation")]
+        public async Task<IActionResult> GetConversation(
+            [FromQuery] Guid businessId,
+            [FromQuery] string userPhone,
+            [FromQuery] string contactPhone)
+        {
+            if (businessId == Guid.Empty || string.IsNullOrWhiteSpace(userPhone) || string.IsNullOrWhiteSpace(contactPhone))
+                return BadRequest("Invalid input.");
+
+            var messages = await _inboxService.GetConversationAsync(businessId, userPhone, contactPhone);
+            return Ok(messages);
+        }
+
+        [HttpPost("mark-read")]
+        public async Task<IActionResult> MarkMessagesAsRead([FromQuery] Guid contactId)
+        {
+            if (contactId == Guid.Empty)
+                return BadRequest("ContactId is required.");
+
+            var businessId = User.GetBusinessId();
+            await _inboxService.MarkMessagesAsReadAsync(businessId, contactId);
+            return Ok();
+        }
+
+        [HttpGet("unread-counts")]
+        public async Task<IActionResult> GetUnreadCounts()
+        {
+            var businessId = User.GetBusinessId();
+            var userId = User.GetUserId();
+
+            if (businessId == null || userId == null)
+                return Unauthorized();
+
+            var counts = await _unreadCountService.GetUnreadCountsAsync(businessId, userId);
+            return Ok(counts);
+        }
+    }
+}
+
+//using Microsoft.AspNetCore.Mvc;
+//using System;
+//using System.Threading.Tasks;
+//using xbytechat.api.Features.Inbox.DTOs;
+//using xbytechat.api.Features.Inbox.Services;
+//using xbytechat.api.Helpers;
+//using Microsoft.AspNetCore.Authorization;
+//using xbytechat.api.Shared;
+//using Microsoft.AspNetCore.SignalR;
+//using xbytechat.api.Features.Inbox.Hubs;
+//namespace xbytechat.api.Features.Inbox.Controllers
+//{
+//    [ApiController]
+//    [Route("api/inbox")]
+//    public class InboxController : ControllerBase
+//    {
+//        private readonly IInboxService _inboxService;
+//        private readonly IHubContext<InboxHub> _hubContext; // ✅ for SignalR push
+//        private readonly IUnreadCountService _unreadCountService;
+//        public InboxController(IInboxService inboxService, IHubContext<InboxHub> hubContext, IUnreadCountService unreadCountService)
+//        {
+//            _inboxService = inboxService;
+//            _hubContext = hubContext;
+//            _unreadCountService = unreadCountService;   
+//        }
+
+//        /// <summary>
+//        /// Send a new message from UI or system.
+//        /// </summary>
+//        [HttpPost("send")]
+//        public async Task<IActionResult> SendMessage([FromBody] InboxMessageDto dto)
+//        {
+//            if (dto == null || string.IsNullOrWhiteSpace(dto.MessageBody))
+//                return BadRequest("Message content is required.");
+
+//            var result = await _inboxService.SaveOutgoingMessageAsync(dto);
+//            return Ok(result);
+//        }
+
+//        /// <summary>
+//        /// Receive a message from external source (e.g., WhatsApp webhook).
+//        /// </summary>
+//        [HttpPost("receive")]
+//        public async Task<IActionResult> ReceiveMessage([FromBody] InboxMessageDto dto)
+//        {
+//            if (dto == null || string.IsNullOrWhiteSpace(dto.MessageBody))
+//                return BadRequest("Incoming message content is required.");
+
+//            var result = await _inboxService.SaveIncomingMessageAsync(dto);
+
+//            // ✅ Also broadcast in real-time to clients in this business group
+//            var groupName = $"business_{dto.BusinessId}";
+//            await _hubContext.Clients.Group(groupName).SendAsync("ReceiveInboxMessage", new
+//            {
+//                contactId = dto.ContactId,
+//                messageContent = dto.MessageBody,  // ✅ aligned with frontend
+//                from = dto.RecipientPhone,
+//                status = "Delivered",
+//                sentAt = DateTime.UtcNow,
+//                isIncoming = true
+//            });
+
+//            return Ok(result);
+//        }
+
+//        /// <summary>
+//        /// Fetch message history between agent and customer using business token + contactId.
+//        /// </summary>
+//        [HttpGet("messages")]
+//        public async Task<IActionResult> GetMessagesByContact([FromQuery] Guid contactId)
+//        {
+//            if (contactId == Guid.Empty)
+//                return BadRequest("ContactId is required.");
+
+//            var businessId = User.GetBusinessId();
+//            var messages = await _inboxService.GetMessagesByContactAsync(businessId, contactId);
+//            return Ok(messages);
+//        }
+
+//        [HttpGet("conversation")]
+//        public async Task<IActionResult> GetConversation(
+//            [FromQuery] Guid businessId,
+//            [FromQuery] string userPhone,
+//            [FromQuery] string contactPhone)
+//        {
+//            if (businessId == Guid.Empty || string.IsNullOrWhiteSpace(userPhone) || string.IsNullOrWhiteSpace(contactPhone))
+//                return BadRequest("Invalid input.");
+
+//            var messages = await _inboxService.GetConversationAsync(businessId, userPhone, contactPhone);
+//            return Ok(messages);
+//        }
+
+//        [HttpPost("mark-read")]
+//        public async Task<IActionResult> MarkMessagesAsRead([FromQuery] Guid contactId)
+//        {
+//            if (contactId == Guid.Empty)
+//                return BadRequest("ContactId is required.");
+
+//            var businessId = User.GetBusinessId();
+//            await _inboxService.MarkMessagesAsReadAsync(businessId, contactId);
+//            return Ok();
+//        }
+
+
+//        [HttpGet("unread-counts")]
+//        public async Task<IActionResult> GetUnreadCounts()
+//        {
+//            var businessId = User.GetBusinessId();
+//            var userId = User.GetUserId();
+
+//            if (businessId == null || userId == null)
+//                return Unauthorized();
+
+//            var counts = await _unreadCountService.GetUnreadCountsAsync(
+//                businessId, userId);
+
+//            return Ok(counts);
+//        }
+//    }
+//}
+
+
+
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Controllers\QuickRepliesController.cs 
+====================================================== 
+ 
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Serilog;
+using xbytechat.api.Features.Inbox.DTOs;
+using xbytechat.api.Features.Inbox.Services;
+using xbytechat.api.Helpers; // for User.GetBusinessId(), GetUserId()
+using xbytechat.api.Shared;
+
+namespace xbytechat.api.Features.Inbox.Controllers
+{
+    [Authorize]
+    [ApiController]
+    [Route("api/quick-replies")]
+    public class QuickRepliesController : ControllerBase
+    {
+        private readonly IQuickReplyService _service;
+
+        public QuickRepliesController(IQuickReplyService service) => _service = service;
+
+        [HttpGet]
+        public async Task<IActionResult> GetAll([FromQuery] string? q = null,
+            [FromQuery] string scope = "all")
+        {
+            var businessId = User.GetBusinessId();
+            var userId = User.GetUserId();
+
+            // Guid is a value type, so null-checks are useless.
+            // Treat Guid.Empty as "no id in claims".
+            if (businessId == Guid.Empty || userId == Guid.Empty)
+                return Unauthorized();
+
+            bool includeBusiness = scope is "all" or "business";
+            bool includePersonal = scope is "all" or "personal";
+
+            var list = await _service.GetAllAsync(businessId, userId, q, includeBusiness, includePersonal);
+            return Ok(list);
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> Create([FromBody] QuickReplyCreateDto dto)
+        {
+            var businessId = User.GetBusinessId();
+            var userId = User.GetUserId();
+
+            if (businessId == Guid.Empty || userId == Guid.Empty)
+                return Unauthorized();
+
+            var actor = User.Identity?.Name
+                        ?? (userId != Guid.Empty ? userId.ToString() : "system");
+
+            Log.Information("Create QuickReply requested by {@Actor}", actor);
+            var result = await _service.CreateAsync(businessId, userId, actor, dto);
+            return Ok(result);
+        }
+
+        [HttpPut("{id:guid}")]
+        public async Task<IActionResult> Update([FromRoute] Guid id, [FromBody] QuickReplyUpdateDto dto)
+        {
+            var businessId = User.GetBusinessId();
+            var userId = User.GetUserId();
+
+            if (businessId == Guid.Empty || userId == Guid.Empty)
+                return Unauthorized();
+
+            var actor = User.Identity?.Name
+                        ?? (userId != Guid.Empty ? userId.ToString() : "system");
+
+            Log.Information("Update QuickReply {@QuickReplyId} by {@Actor}", id, actor);
+            var result = await _service.UpdateAsync(businessId, userId, actor, id, dto);
+            return Ok(result);
+        }
+
+        [HttpPatch("{id:guid}/toggle")]
+        public async Task<IActionResult> Toggle([FromRoute] Guid id, [FromQuery] bool active = true)
+        {
+            var businessId = User.GetBusinessId();
+            var userId = User.GetUserId();
+
+            if (businessId == Guid.Empty || userId == Guid.Empty)
+                return Unauthorized();
+
+            var actor = User.Identity?.Name
+                        ?? (userId != Guid.Empty ? userId.ToString() : "system");
+
+            Log.Information("Toggle QuickReply {@QuickReplyId} -> {Active} by {@Actor}", id, active, actor);
+            var result = await _service.ToggleActiveAsync(businessId, userId, actor, id, active);
+            return Ok(result);
+        }
+
+        [HttpDelete("{id:guid}")]
+        public async Task<IActionResult> Delete([FromRoute] Guid id)
+        {
+            var businessId = User.GetBusinessId();
+            var userId = User.GetUserId();
+
+            if (businessId == Guid.Empty || userId == Guid.Empty)
+                return Unauthorized();
+
+            var actor = User.Identity?.Name
+                        ?? (userId != Guid.Empty ? userId.ToString() : "system");
+
+            Log.Information("Delete QuickReply {@QuickReplyId} by {@Actor}", id, actor);
+            var result = await _service.DeleteAsync(businessId, userId, actor, id);
+            return Ok(result);
+        }
+    }
+}
+
+
+//using Microsoft.AspNetCore.Authorization;
+//using Microsoft.AspNetCore.Mvc;
+//using Serilog;
+//using xbytechat.api.Features.Inbox.DTOs;
+//using xbytechat.api.Features.Inbox.Services;
+//using xbytechat.api.Helpers; // for User.GetBusinessId(), GetUserId()
+//using xbytechat.api.Shared;
+
+//namespace xbytechat.api.Features.Inbox.Controllers
+//{
+//    [Authorize]
+//    [ApiController]
+//    [Route("api/quick-replies")]
+//    public class QuickRepliesController : ControllerBase
+//    {
+//        private readonly IQuickReplyService _service;
+
+//        public QuickRepliesController(IQuickReplyService service) => _service = service;
+
+//        [HttpGet]
+//        public async Task<IActionResult> GetAll([FromQuery] string? q = null,
+//            [FromQuery] string scope = "all")
+//        {
+//            var businessId = User.GetBusinessId();
+//            var userId = User.GetUserId();
+
+//            if (businessId == null || userId == null) return Unauthorized();
+
+//            bool includeBusiness = scope is "all" or "business";
+//            bool includePersonal = scope is "all" or "personal";
+
+//            var list = await _service.GetAllAsync(businessId, userId, q, includeBusiness, includePersonal);
+//            return Ok(list);
+//        }
+
+//        [HttpPost]
+//        public async Task<IActionResult> Create([FromBody] QuickReplyCreateDto dto)
+//        {
+//            var businessId = User.GetBusinessId();
+//            var userId = User.GetUserId();
+//            var actor = User.Identity?.Name ?? userId.ToString() ?? "system";
+
+//            if (businessId == null || userId == null) return Unauthorized();
+
+//            Log.Information("Create QuickReply requested by {@Actor}", actor);
+//            var result = await _service.CreateAsync(businessId, userId, actor, dto);
+//            return Ok(result);
+//        }
+
+//        [HttpPut("{id:guid}")]
+//        public async Task<IActionResult> Update([FromRoute] Guid id, [FromBody] QuickReplyUpdateDto dto)
+//        {
+//            var businessId = User.GetBusinessId();
+//            var userId = User.GetUserId();
+//            var actor = User.Identity?.Name ?? userId.ToString() ?? "system";
+
+//            if (businessId == null || userId == null) return Unauthorized();
+
+//            Log.Information("Update QuickReply {@QuickReplyId} by {@Actor}", id, actor);
+//            var result = await _service.UpdateAsync(businessId, userId, actor, id, dto);
+//            return Ok(result);
+//        }
+
+//        [HttpPatch("{id:guid}/toggle")]
+//        public async Task<IActionResult> Toggle([FromRoute] Guid id, [FromQuery] bool active = true)
+//        {
+//            var businessId = User.GetBusinessId();
+//            var userId = User.GetUserId();
+//            var actor = User.Identity?.Name ?? userId.ToString() ?? "system";
+
+//            if (businessId == null || userId == null) return Unauthorized();
+
+//            Log.Information("Toggle QuickReply {@QuickReplyId} -> {Active} by {@Actor}", id, active, actor);
+//            var result = await _service.ToggleActiveAsync(businessId, userId, actor, id, active);
+//            return Ok(result);
+//        }
+
+//        [HttpDelete("{id:guid}")]
+//        public async Task<IActionResult> Delete([FromRoute] Guid id)
+//        {
+//            var businessId = User.GetBusinessId();
+//            var userId = User.GetUserId();
+//            var actor = User.Identity?.Name ?? userId.ToString() ?? "system";
+
+//            if (businessId == null || userId == null) return Unauthorized();
+
+//            Log.Information("Delete QuickReply {@QuickReplyId} by {@Actor}", id, actor);
+//            var result = await _service.DeleteAsync(businessId, userId, actor, id);
+//            return Ok(result);
+//        }
+//    }
+//}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\DTOs\InboxMessageDto.cs 
+====================================================== 
+ 
+﻿// 📄 File: Features/Inbox/DTOs/InboxMessageDto.cs
+using System;
+
+namespace xbytechat.api.Features.Inbox.DTOs
+{
+    public class InboxMessageDto
+    {
+        public Guid BusinessId { get; set; }
+        public string RecipientPhone { get; set; }
+        public string MessageBody { get; set; }
+        public Guid? ContactId { get; set; }
+        public Guid? CTAFlowStepId { get; set; }
+        public Guid? CTAFlowConfigId { get; set; }
+        public Guid? CampaignId { get; set; }
+        public string? CampaignName { get; set; }       // 🆕 To show in chat bubble
+        public string? RenderedBody { get; set; }
+
+        public bool IsIncoming { get; set; }            // 🆕 Needed for bubble side
+        public string Status { get; set; }              // 🆕 For message ticks
+        public DateTime SentAt { get; set; }            // 🆕 For timestamp
+
+        // ✅ NEW: Provider/WAMID idempotency key (Meta "messages[0].id")
+        public string? ProviderMessageId { get; set; }
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\DTOs\QuickReplyDtos.cs 
+====================================================== 
+ 
+﻿using System.ComponentModel.DataAnnotations;
+using xbytechat.api.Features.Inbox.Models;
+
+namespace xbytechat.api.Features.Inbox.DTOs
+{
+    public sealed class QuickReplyDto
+    {
+        public Guid Id { get; set; }
+        public Guid BusinessId { get; set; }
+        public Guid? OwnerUserId { get; set; }
+        public QuickReplyScope Scope { get; set; }
+        public string Title { get; set; } = string.Empty;
+        public string Body { get; set; } = string.Empty;
+        public string? TagsCsv { get; set; }
+        public string? Language { get; set; }
+        public bool IsActive { get; set; }
+        public DateTime UpdatedAt { get; set; }
+    }
+
+    public sealed class QuickReplyCreateDto
+    {
+        [Required, MaxLength(120)] public string Title { get; set; } = string.Empty;
+        [Required] public string Body { get; set; } = string.Empty;
+        [MaxLength(240)] public string? TagsCsv { get; set; }
+        [MaxLength(8)] public string? Language { get; set; }
+        public QuickReplyScope Scope { get; set; } = QuickReplyScope.Personal;
+    }
+
+    public sealed class QuickReplyUpdateDto
+    {
+        [Required, MaxLength(120)] public string Title { get; set; } = string.Empty;
+        [Required] public string Body { get; set; } = string.Empty;
+        [MaxLength(240)] public string? TagsCsv { get; set; }
+        [MaxLength(8)] public string? Language { get; set; }
+        public bool IsActive { get; set; } = true;
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\DTOs\SendInboxMessageDto.cs 
+====================================================== 
+ 
+﻿using System;
+using System.ComponentModel.DataAnnotations;
+
+namespace xbytechat.api.Features.Inbox.DTOs
+{
+    /// <summary>
+    /// DTO sent from frontend when a user sends a new message.
+    /// </summary>
+    public class SendInboxMessageDto
+    {
+        [Required]
+        public Guid ContactId { get; set; }
+
+        [Required]
+        public string MessageBody { get; set; }
+
+        public string? MediaUrl { get; set; } // Optional image or file
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\DTOs\SendMessageInputDto.cs 
+====================================================== 
+ 
+﻿namespace xbytechat.api.Features.Inbox.DTOs
+{
+    public class SendMessageInputDto
+    {
+        public Guid ContactId { get; set; } // 🔁 REMOVE the "?" (nullable) unless needed
+        public string Message { get; set; } = string.Empty;
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\DTOs\TextOnlyMessageSendDto.cs 
+====================================================== 
+ 
+﻿namespace xbytechat.api.Features.Inbox.DTOs
+{
+    public class TextOnlyMessageSendDto
+    {
+        public Guid BusinessId { get; set; }
+
+        public string RecipientNumber { get; set; }
+
+        public string TextContent { get; set; }
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Hubs\InboxHub.cs 
+====================================================== 
+ 
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.SignalR;
+using Microsoft.EntityFrameworkCore;
+using xbytechat.api.Features.MessagesEngine.DTOs;
+using xbytechat.api.Features.MessagesEngine.Services;
+using xbytechat.api.Features.Inbox.Services;
+using xbytechat.api.Models;
+using xbytechat.api.Features.Inbox.Models;
+using xbytechat.api.Shared;
+using xbytechat.api.Features.Inbox.DTOs;
+
+namespace xbytechat.api.Features.Inbox.Hubs
+{
+    [Authorize]
+    public sealed class InboxHub : Hub
+    {
+        private readonly AppDbContext _db;
+        private readonly IMessageEngineService _messageService;
+        private readonly IUnreadCountService _unreadCountService;
+        private readonly ILogger<InboxHub> _logger;
+
+        public InboxHub(
+            AppDbContext db,
+            IMessageEngineService messageService,
+            IUnreadCountService unreadCountService,
+            ILogger<InboxHub> logger)
+        {
+            _db = db;
+            _messageService = messageService;
+            _unreadCountService = unreadCountService;
+            _logger = logger;
+        }
+
+        public override async Task OnConnectedAsync()
+        {
+            var businessId = Context.User.GetBusinessId();
+
+            if (businessId == Guid.Empty)
+            {
+                _logger.LogWarning("InboxHub connect: missing BusinessId claim. Conn={ConnId}", Context.ConnectionId);
+                await base.OnConnectedAsync();
+                return;
+            }
+
+            var groupName = GetBusinessGroupName(businessId);
+
+            await Groups.AddToGroupAsync(Context.ConnectionId, groupName);
+            _logger.LogInformation("InboxHub connected. Group={Group} Conn={ConnId} UserIdentifier={UserId}",
+                groupName, Context.ConnectionId, Context.UserIdentifier);
+
+            await base.OnConnectedAsync();
+        }
+
+        public override async Task OnDisconnectedAsync(Exception? exception)
+        {
+            var businessId = Context.User.GetBusinessId();
+
+            if (businessId != Guid.Empty)
+            {
+                var groupName = GetBusinessGroupName(businessId);
+                try { await Groups.RemoveFromGroupAsync(Context.ConnectionId, groupName); } catch { /* ignore */ }
+
+                _logger.LogInformation("InboxHub disconnected. Group={Group} Conn={ConnId}", groupName, Context.ConnectionId);
+            }
+
+            await base.OnDisconnectedAsync(exception);
+        }
+
+        // ✅ Frontend should invoke: connection.invoke("SendMessageToContact", { contactId, message })
+        public async Task SendMessageToContact(SendMessageInputDto dto)
+        {
+            if (dto == null)
+                return;
+
+            if (dto.ContactId == Guid.Empty || string.IsNullOrWhiteSpace(dto.Message))
+            {
+                _logger.LogWarning("SendMessageToContact invalid payload. ContactId={ContactId}", dto.ContactId);
+                return;
+            }
+
+            var businessId = Context.User.GetBusinessId();
+            var userId = Context.User.GetUserId();
+
+            if (businessId == Guid.Empty || userId == Guid.Empty)
+            {
+                _logger.LogWarning("SendMessageToContact missing BusinessId/UserId. Conn={ConnId}", Context.ConnectionId);
+                return;
+            }
+
+            try
+            {
+                // ✅ Lookup recipient phone number from Contacts
+                var contact = await _db.Contacts
+                    .Where(c => c.BusinessId == businessId && c.Id == dto.ContactId)
+                    .FirstOrDefaultAsync();
+
+                if (contact == null || string.IsNullOrWhiteSpace(contact.PhoneNumber))
+                {
+                    _logger.LogWarning("SendMessageToContact contact not found or missing phone. BusinessId={BusinessId} ContactId={ContactId}",
+                        businessId, dto.ContactId);
+
+                    await Clients.Caller.SendAsync("ReceiveInboxMessage", new
+                    {
+                        contactId = dto.ContactId,
+                        messageContent = dto.Message,
+                        from = userId,
+                        status = "Failed",
+                        error = "Invalid contact"
+                    });
+
+                    return;
+                }
+
+                var sendDto = new TextMessageSendDto
+                {
+                    BusinessId = businessId,
+                    ContactId = dto.ContactId,
+                    RecipientNumber = contact.PhoneNumber,
+                    TextContent = dto.Message
+                };
+
+                var result = await _messageService.SendTextDirectAsync(sendDto);
+
+                var inboxMessage = new
+                {
+                    contactId = dto.ContactId,
+                    messageContent = dto.Message,
+                    from = userId,
+                    status = result.Success ? "Sent" : "Failed",
+                    sentAt = DateTime.UtcNow,
+                    logId = result.LogId,
+                    senderId = userId,
+                    isIncoming = false
+                };
+
+                // Caller always gets it
+                await Clients.Caller.SendAsync("ReceiveInboxMessage", inboxMessage);
+
+                // Others in the same business get it
+                var groupName = GetBusinessGroupName(businessId);
+                await Clients.GroupExcept(groupName, Context.ConnectionId)
+                    .SendAsync("ReceiveInboxMessage", inboxMessage);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "SendMessageToContact failed. BusinessId={BusinessId} ContactId={ContactId}",
+                    businessId, dto.ContactId);
+
+                await Clients.Caller.SendAsync("ReceiveInboxMessage", new
+                {
+                    contactId = dto.ContactId,
+                    messageContent = dto.Message,
+                    from = userId,
+                    status = "Failed",
+                    error = "Server error"
+                });
+            }
+        }
+
+      
+        public async Task MarkAsRead(Guid contactId)
+        {
+            if (contactId == Guid.Empty)
+                return;
+
+            var userId = Context.User.GetUserId();
+            var businessId = Context.User.GetBusinessId();
+
+            if (userId == Guid.Empty || businessId == Guid.Empty)
+                return;
+
+            try
+            {
+                var now = DateTime.UtcNow;
+
+                // ✅ Upsert ContactRead
+                var readEntry = await _db.ContactReads
+                    .FirstOrDefaultAsync(r => r.BusinessId == businessId && r.ContactId == contactId && r.UserId == userId);
+
+                if (readEntry == null)
+                {
+                    _db.ContactReads.Add(new ContactRead
+                    {
+                        Id = Guid.NewGuid(),
+                        BusinessId = businessId,
+                        ContactId = contactId,
+                        UserId = userId,
+                        LastReadAt = now
+                    });
+                }
+                else
+                {
+                    readEntry.LastReadAt = now;
+                }
+
+                await _db.SaveChangesAsync();
+
+                // ✅ CRITICAL FIX:
+                // UnreadCountService returns ONLY contacts with unread > 0.
+                // If this contact becomes 0, it will be missing from the dictionary,
+                // so the frontend would never clear the old badge.
+                // Force-send an explicit "0" for this contact to the caller.
+                await Clients.Caller.SendAsync("UnreadCountChanged", new
+                {
+                    contactId = contactId,
+                    unreadCount = 0
+                });
+
+                // ✅ Caller also gets their full unread map (for other chats)
+                var unreadCounts = await _unreadCountService.GetUnreadCountsAsync(businessId, userId);
+                await Clients.Caller.SendAsync("UnreadCountChanged", unreadCounts);
+
+                // ✅ Others get "refresh your own" signal
+                var groupName = GetBusinessGroupName(businessId);
+                await Clients.GroupExcept(groupName, Context.ConnectionId)
+                    .SendAsync("UnreadCountChanged", new { refresh = true });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "MarkAsRead failed. BusinessId={BusinessId} UserId={UserId} ContactId={ContactId}",
+                    businessId, userId, contactId);
+            }
+        }
+
+        private static string GetBusinessGroupName(Guid businessId) => $"business_{businessId}";
+    }
+}
+
+
+
+
+
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Models\ChatSessionState.cs 
+====================================================== 
+ 
+﻿namespace xbytechat.api.Features.Inbox.Models
+{
+    public class ChatSessionState
+    {
+        public Guid Id { get; set; } = Guid.NewGuid();
+        public Guid BusinessId { get; set; }
+        public Guid ContactId { get; set; }
+
+        public string Mode { get; set; } = "automation"; // values: "automation" | "agent"
+        public DateTime LastUpdatedAt { get; set; } = DateTime.UtcNow;
+
+        // Optional: track who switched the mode
+        public string? UpdatedBy { get; set; }
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Models\ContactRead.cs 
+====================================================== 
+ 
+﻿using System;
+
+namespace xbytechat.api.Features.Inbox.Models
+{
+    public class ContactRead
+    {
+        public Guid Id { get; set; }
+
+        // 🔗 FK to Contact
+        public Guid ContactId { get; set; }
+
+        // 🔗 FK to User (Agent)
+        public Guid UserId { get; set; }
+
+        // 📅 Last time this agent opened this contact's chat
+        public DateTime LastReadAt { get; set; } = DateTime.UtcNow;
+
+        public Guid BusinessId { get; set; }
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Models\QuickReply.cs 
+====================================================== 
+ 
+﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
+namespace xbytechat.api.Features.Inbox.Models
+{
+    public enum QuickReplyScope { Personal = 0, Business = 2 }
+
+    [Table("QuickReplies")]
+    public class QuickReply
+    {
+        [Key] public Guid Id { get; set; }
+        [Required] public Guid BusinessId { get; set; }
+        public Guid? OwnerUserId { get; set; }                // null for Business scope
+
+        [Required, MaxLength(120)] public string Title { get; set; } = string.Empty;
+        [Required] public string Body { get; set; } = string.Empty;
+
+        [MaxLength(240)] public string? TagsCsv { get; set; }
+        [MaxLength(8)] public string? Language { get; set; }   // e.g. "en", "hi"
+
+        public QuickReplyScope Scope { get; set; } = QuickReplyScope.Personal;
+        public bool IsActive { get; set; } = true;
+        public bool IsDeleted { get; set; } = false;
+
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+        public string? CreatedBy { get; set; }
+        public string? UpdatedBy { get; set; }
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Repositories\IInboxRepository.cs 
+====================================================== 
+ 
+﻿using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+namespace xbytechat.api.Features.Inbox.Repositories
+{
+    public interface IInboxRepository
+    {
+        Task<List<MessageLog>> GetConversationAsync(Guid businessId, string userPhone, string contactPhone, int limit = 50);
+        Task<MessageLog?> GetLastMessageAsync(Guid businessId, string userPhone, string contactPhone);
+
+        Task AddMessageAsync(MessageLog message);
+        Task SaveChangesAsync();
+
+        Task<List<MessageLog>> GetMessagesByContactIdAsync(Guid businessId, Guid contactId);
+
+        Task<Dictionary<Guid, int>> GetUnreadMessageCountsAsync(Guid businessId);
+        Task MarkMessagesAsReadAsync(Guid businessId, Guid contactId);
+
+        Task<Dictionary<Guid, int>> GetUnreadCountsForUserAsync(Guid businessId, Guid userId);
+
+        // ✅ Step 3: Soft idempotency helper
+        // Used to prevent duplicate inbound inserts when webhook retries arrive.
+        Task<MessageLog?> FindByProviderMessageIdAsync(Guid businessId, string providerMessageId);
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Repositories\InboxRepository.cs 
+====================================================== 
+ 
+﻿using Microsoft.EntityFrameworkCore;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+namespace xbytechat.api.Features.Inbox.Repositories
+{
+    public class InboxRepository : IInboxRepository
+    {
+        private readonly AppDbContext _context;
+
+        public InboxRepository(AppDbContext context)
+        {
+            _context = context;
+        }
+
+        public async Task<List<MessageLog>> GetConversationAsync(Guid businessId, string userPhone, string contactPhone, int limit = 50)
+        {
+            return await _context.MessageLogs
+                .Where(m => m.BusinessId == businessId &&
+                            ((m.RecipientNumber == contactPhone && m.IsIncoming == false) ||
+                             (m.RecipientNumber == userPhone && m.IsIncoming == true)))
+                .OrderByDescending(m => m.CreatedAt)
+                .Take(limit)
+                .ToListAsync();
+        }
+
+        public async Task<MessageLog?> GetLastMessageAsync(Guid businessId, string userPhone, string contactPhone)
+        {
+            return await _context.MessageLogs
+                .Where(m => m.BusinessId == businessId &&
+                            ((m.RecipientNumber == contactPhone && m.IsIncoming == false) ||
+                             (m.RecipientNumber == userPhone && m.IsIncoming == true)))
+                .OrderByDescending(m => m.CreatedAt)
+                .FirstOrDefaultAsync();
+        }
+
+        public async Task AddMessageAsync(MessageLog message)
+        {
+            await _context.MessageLogs.AddAsync(message);
+        }
+
+        public async Task SaveChangesAsync()
+        {
+            await _context.SaveChangesAsync();
+        }
+
+        public async Task<List<MessageLog>> GetMessagesByContactIdAsync(Guid businessId, Guid contactId)
+        {
+            return await _context.MessageLogs
+                .Include(m => m.SourceCampaign)
+                .Where(m => m.BusinessId == businessId && m.ContactId == contactId)
+                .OrderBy(m => m.CreatedAt)
+                .ToListAsync();
+        }
+
+        public async Task<Dictionary<Guid, int>> GetUnreadMessageCountsAsync(Guid businessId)
+        {
+            return await _context.MessageLogs
+                .Where(m => m.BusinessId == businessId &&
+                            m.IsIncoming &&
+                            m.Status != "Read" &&
+                            m.ContactId != null)
+                .GroupBy(m => m.ContactId!.Value)
+                .Select(g => new { ContactId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.ContactId, x => x.Count);
+        }
+
+        public async Task MarkMessagesAsReadAsync(Guid businessId, Guid contactId)
+        {
+            var unreadMessages = await _context.MessageLogs
+                .Where(m => m.BusinessId == businessId &&
+                            m.ContactId == contactId &&
+                            m.IsIncoming &&
+                            m.Status != "Read")
+                .ToListAsync();
+
+            foreach (var msg in unreadMessages)
+                msg.Status = "Read";
+
+            await _context.SaveChangesAsync();
+        }
+
+        public async Task<Dictionary<Guid, int>> GetUnreadCountsForUserAsync(Guid businessId, Guid userId)
+        {
+            var contactReads = await _context.ContactReads
+                .Where(r => r.UserId == userId)
+                .ToDictionaryAsync(r => r.ContactId, r => r.LastReadAt);
+
+            var allMessages = await _context.MessageLogs
+                .Where(m => m.BusinessId == businessId && m.IsIncoming && m.ContactId != null)
+                .ToListAsync();
+
+            var unreadCounts = allMessages
+                .GroupBy(m => m.ContactId!.Value)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.Count(m =>
+                        !contactReads.ContainsKey(g.Key) ||
+                        (m.SentAt ?? m.CreatedAt) > contactReads[g.Key])
+                );
+
+            return unreadCounts;
+        }
+
+        // ✅ Step 4: Soft idempotency lookup (BusinessId + ProviderMessageId/WAMID)
+        // Used by InboxService to avoid inserting duplicate inbound rows when Meta retries webhooks.
+        public async Task<MessageLog?> FindByProviderMessageIdAsync(Guid businessId, string providerMessageId)
+        {
+            if (businessId == Guid.Empty) return null;
+            if (string.IsNullOrWhiteSpace(providerMessageId)) return null;
+
+            var wamid = providerMessageId.Trim();
+
+            // IMPORTANT:
+            // - Use ProviderMessageId only for webhook idempotency.
+            // - Do NOT match against MessageId here (prevents cross-path collisions).
+            return await _context.MessageLogs
+                .AsNoTracking()
+                .FirstOrDefaultAsync(m =>
+                    m.BusinessId == businessId &&
+                    m.ProviderMessageId != null &&
+                    m.ProviderMessageId == wamid
+                );
+        }
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Services\AgentAssignmentService.cs 
+====================================================== 
+ 
+﻿using System;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+
+namespace xbytechat.api.Features.Inbox.Services
+{
+    public class AgentAssignmentService : IAgentAssignmentService
+    {
+        private readonly ILogger<AgentAssignmentService> _logger;
+
+        public AgentAssignmentService(ILogger<AgentAssignmentService> logger)
+        {
+            _logger = logger;
+        }
+
+        public Task<bool> IsAgentAvailableAsync(Guid businessId)
+        {
+            // 🔧 TODO: Replace with real logic based on your agent pool
+            _logger.LogInformation("Checking if agent is available for business {BusinessId}", businessId);
+            return Task.FromResult(true); // Assume always available for MVP
+        }
+
+        public Task AssignAgentToContactAsync(Guid businessId, Guid contactId)
+        {
+            // 🔧 TODO: Save agent-contact assignment to DB or notify a human agent
+            _logger.LogInformation("Assigning agent to contact {ContactId} for business {BusinessId}", contactId, businessId);
+            return Task.CompletedTask;
+        }
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Services\ChatSessionStateService.cs 
+====================================================== 
+ 
+﻿using Microsoft.EntityFrameworkCore;
+using xbytechat.api.Features.AutoReplyBuilder.Models;
+using xbytechat.api.Features.Inbox.Models;
+
+namespace xbytechat.api.Features.Inbox.Services
+{
+    public class ChatSessionStateService : IChatSessionStateService
+    {
+        private readonly AppDbContext _db;
+
+        public ChatSessionStateService(AppDbContext db)
+        {
+            _db = db;
+        }
+
+        // ✅ Returns current chat mode: "agent" or "auto"
+        public async Task<string> GetChatModeAsync(Guid businessId, Guid contactId)
+        {
+            var session = await _db.ChatSessionStates
+                .FirstOrDefaultAsync(s => s.BusinessId == businessId && s.ContactId == contactId);
+
+            return session?.Mode ?? "auto"; // Default to auto
+        }
+
+        // ✅ Switches to agent mode
+        public async Task SwitchToAgentModeAsync(Guid businessId, Guid contactId)
+        {
+            await UpsertChatModeAsync(businessId, contactId, "agent");
+        }
+
+        // ✅ Switches to automation mode
+        public async Task SwitchToAutomationModeAsync(Guid businessId, Guid contactId)
+        {
+            await UpsertChatModeAsync(businessId, contactId, "auto");
+        }
+
+        // ✅ Shared logic to insert or update session state
+        private async Task UpsertChatModeAsync(Guid businessId, Guid contactId, string mode)
+        {
+            var existing = await _db.ChatSessionStates
+                .FirstOrDefaultAsync(s => s.BusinessId == businessId && s.ContactId == contactId);
+
+            if (existing != null)
+            {
+                existing.Mode = mode;
+                existing.LastUpdatedAt = DateTime.UtcNow;
+            }
+            else
+            {
+                _db.ChatSessionStates.Add(new ChatSessionState
+                {
+                    BusinessId = businessId,
+                    ContactId = contactId,
+                    Mode = mode,
+                    LastUpdatedAt = DateTime.UtcNow
+                });
+            }
+
+            await _db.SaveChangesAsync();
+        }
+
+        public async Task SetChatModeAsync(Guid businessId, Guid contactId, string mode)
+        {
+            var state = await _db.ChatSessionStates
+                .FirstOrDefaultAsync(x => x.BusinessId == businessId && x.ContactId == contactId);
+
+            if (state == null)
+            {
+                // Insert new if not exists
+                state = new ChatSessionState
+                {
+                    Id = Guid.NewGuid(),
+                    BusinessId = businessId,
+                    ContactId = contactId,
+                    Mode = mode,
+                    LastUpdatedAt = DateTime.UtcNow
+                };
+                _db.ChatSessionStates.Add(state);
+            }
+            else
+            {
+                state.Mode = mode;
+                state.LastUpdatedAt = DateTime.UtcNow;
+            }
+
+            await _db.SaveChangesAsync();
+        }
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Services\IAgentAssignmentService.cs 
+====================================================== 
+ 
+﻿using System;
+using System.Threading.Tasks;
+
+namespace xbytechat.api.Features.Inbox.Services
+{
+    public interface IAgentAssignmentService
+    {
+        Task<bool> IsAgentAvailableAsync(Guid businessId);
+        Task AssignAgentToContactAsync(Guid businessId, Guid contactId);
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Services\IChatSessionStateService.cs 
+====================================================== 
+ 
+﻿namespace xbytechat.api.Features.Inbox.Services
+{
+    public interface IChatSessionStateService
+    {
+        Task<string> GetChatModeAsync(Guid businessId, Guid contactId);
+        Task SwitchToAgentModeAsync(Guid businessId, Guid contactId);
+        Task SwitchToAutomationModeAsync(Guid businessId, Guid contactId);
+        Task SetChatModeAsync(Guid businessId, Guid contactId, string mode);
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Services\IInboxService.cs 
+====================================================== 
+ 
+﻿using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using xbytechat.api.Features.Inbox.DTOs;
+using xbytechat.api.Features.MessageManagement.DTOs;
+
+namespace xbytechat.api.Features.Inbox.Services
+{
+    public interface IInboxService
+    {
+        Task<List<MessageLog>> GetConversationAsync(Guid businessId, string userPhone, string contactPhone, int limit = 50);
+        Task<MessageLog> SaveIncomingMessageAsync(InboxMessageDto dto);
+        Task<MessageLog> SaveOutgoingMessageAsync(InboxMessageDto dto);
+        Task<List<MessageLogDto>> GetMessagesByContactAsync(Guid businessId, Guid contactId);
+        Task<Dictionary<Guid, int>> GetUnreadMessageCountsAsync(Guid businessId);
+        Task MarkMessagesAsReadAsync(Guid businessId, Guid contactId);
+
+        Task<Dictionary<Guid, int>> GetUnreadCountsForUserAsync(Guid businessId, Guid userId);
+
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Services\InboxService.cs 
+====================================================== 
+ 
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using xbytechat.api.Features.Inbox.DTOs;
+using xbytechat.api.Features.Inbox.Repositories;
+using xbytechat.api.Features.MessageManagement.DTOs;
+
+namespace xbytechat.api.Features.Inbox.Services
+{
+    public class InboxService : IInboxService
+    {
+        private readonly IInboxRepository _repository;
+
+        public InboxService(IInboxRepository repository)
+        {
+            _repository = repository;
+        }
+
+        public async Task<List<MessageLog>> GetConversationAsync(Guid businessId, string userPhone, string contactPhone, int limit = 50)
+        {
+            return await _repository.GetConversationAsync(businessId, userPhone, contactPhone, limit);
+        }
+
+        public async Task<MessageLog> SaveIncomingMessageAsync(InboxMessageDto dto)
+        {
+            // ✅ Soft idempotency on (BusinessId + ProviderMessageId) if available.
+            // Normalize ProviderMessageId to avoid "space" duplicates.
+            var providerMessageId = string.IsNullOrWhiteSpace(dto.ProviderMessageId)
+                ? null
+                : dto.ProviderMessageId.Trim();
+
+            if (!string.IsNullOrWhiteSpace(providerMessageId))
+            {
+                var existing = await _repository.FindByProviderMessageIdAsync(dto.BusinessId, providerMessageId);
+                if (existing != null)
+                    return existing;
+            }
+
+            // ✅ SentAt: caller should pass provider timestamp when available; otherwise fall back to server time.
+            var sentAtUtc = dto.SentAt == default ? DateTime.UtcNow : dto.SentAt;
+
+            var message = new MessageLog
+            {
+                Id = Guid.NewGuid(),
+                BusinessId = dto.BusinessId,
+
+                RecipientNumber = dto.RecipientPhone,
+                MessageContent = dto.MessageBody,
+
+                IsIncoming = true,
+
+                // ✅ Keep status consistent for UI (incoming should never be updated by delivery webhooks now)
+                Status = string.IsNullOrWhiteSpace(dto.Status) ? "Received" : dto.Status.Trim(),
+                SentAt = sentAtUtc,
+
+                // ✅ CreatedAt = insert time (server truth)
+                CreatedAt = DateTime.UtcNow,
+
+                ProviderMessageId = providerMessageId,
+
+                ContactId = dto.ContactId,
+                CTAFlowStepId = dto.CTAFlowStepId,
+                CTAFlowConfigId = dto.CTAFlowConfigId,
+                CampaignId = dto.CampaignId,
+                RenderedBody = dto.RenderedBody
+            };
+
+            await _repository.AddMessageAsync(message);
+            await _repository.SaveChangesAsync();
+
+            return message;
+        }
+
+        public async Task<MessageLog> SaveOutgoingMessageAsync(InboxMessageDto dto)
+        {
+            // Outgoing WAMID may be unknown at creation time.
+            // If present (e.g., send returns WAMID and we call this after), add idempotency to avoid duplicates.
+            var providerMessageId = string.IsNullOrWhiteSpace(dto.ProviderMessageId)
+                ? null
+                : dto.ProviderMessageId.Trim();
+
+            if (!string.IsNullOrWhiteSpace(providerMessageId))
+            {
+                var existing = await _repository.FindByProviderMessageIdAsync(dto.BusinessId, providerMessageId);
+                if (existing != null)
+                    return existing;
+            }
+
+            var sentAtUtc = dto.SentAt == default ? DateTime.UtcNow : dto.SentAt;
+
+            var message = new MessageLog
+            {
+                Id = Guid.NewGuid(),
+                BusinessId = dto.BusinessId,
+
+                RecipientNumber = dto.RecipientPhone,
+                MessageContent = dto.MessageBody,
+
+                IsIncoming = false,
+
+                // ✅ Default outgoing status
+                Status = string.IsNullOrWhiteSpace(dto.Status) ? "Queued" : dto.Status.Trim(),
+                SentAt = sentAtUtc,
+
+                CreatedAt = DateTime.UtcNow,
+
+                ProviderMessageId = providerMessageId,
+
+                ContactId = dto.ContactId,
+                CTAFlowStepId = dto.CTAFlowStepId,
+                CTAFlowConfigId = dto.CTAFlowConfigId,
+                CampaignId = dto.CampaignId,
+                RenderedBody = dto.RenderedBody
+            };
+
+            await _repository.AddMessageAsync(message);
+            await _repository.SaveChangesAsync();
+
+            return message;
+        }
+
+        public async Task<List<MessageLogDto>> GetMessagesByContactAsync(Guid businessId, Guid contactId)
+        {
+            var messages = await _repository.GetMessagesByContactIdAsync(businessId, contactId);
+
+            return messages.Select(m => new MessageLogDto
+            {
+                Id = m.Id,
+                ContactId = m.ContactId,
+                RecipientNumber = m.RecipientNumber,
+                MessageContent = m.MessageContent,
+                CreatedAt = m.CreatedAt,
+                IsIncoming = m.IsIncoming,
+                RenderedBody = m.RenderedBody,
+                CampaignId = m.CampaignId,
+                CampaignName = m.SourceCampaign?.Name,
+                CTAFlowConfigId = m.CTAFlowConfigId,
+                CTAFlowStepId = m.CTAFlowStepId
+            }).ToList();
+        }
+
+        public async Task<Dictionary<Guid, int>> GetUnreadMessageCountsAsync(Guid businessId)
+        {
+            return await _repository.GetUnreadMessageCountsAsync(businessId);
+        }
+
+        public async Task MarkMessagesAsReadAsync(Guid businessId, Guid contactId)
+        {
+            await _repository.MarkMessagesAsReadAsync(businessId, contactId);
+        }
+
+        public async Task<Dictionary<Guid, int>> GetUnreadCountsForUserAsync(Guid businessId, Guid userId)
+        {
+            return await _repository.GetUnreadCountsForUserAsync(businessId, userId);
+        }
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Services\IQuickReplyService.cs 
+====================================================== 
+ 
+﻿using xbytechat.api.Features.Inbox.DTOs;
+using xbytechat.api.Helpers;
+using xbytechat.api.Shared;
+
+namespace xbytechat.api.Features.Inbox.Services
+{
+    public interface IQuickReplyService
+    {
+        Task<List<QuickReplyDto>> GetAllAsync(Guid businessId, Guid userId,
+            string? search = null, bool includeBusiness = true, bool includePersonal = true);
+
+        Task<ResponseResult> CreateAsync(Guid businessId, Guid userId, string actor, QuickReplyCreateDto dto);
+        Task<ResponseResult> UpdateAsync(Guid businessId, Guid userId, string actor, Guid id, QuickReplyUpdateDto dto);
+        Task<ResponseResult> ToggleActiveAsync(Guid businessId, Guid userId, string actor, Guid id, bool isActive);
+        Task<ResponseResult> DeleteAsync(Guid businessId, Guid userId, string actor, Guid id);
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Services\IUnreadCountService.cs 
+====================================================== 
+ 
+﻿using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+namespace xbytechat.api.Features.Inbox.Services
+{
+    public interface IUnreadCountService
+    {
+        Task<Dictionary<Guid, int>> GetUnreadCountsAsync(Guid businessId, Guid userId);
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Services\QuickReplyService.cs 
+====================================================== 
+ 
+﻿using Microsoft.EntityFrameworkCore;
+using Serilog;
+using xbytechat.api.Features.Inbox.DTOs;
+using xbytechat.api.Features.Inbox.Models;
+using xbytechat.api.Helpers;
+using xbytechat.api.Shared;
+
+namespace xbytechat.api.Features.Inbox.Services
+{
+    public class QuickReplyService : IQuickReplyService
+    {
+        private readonly AppDbContext _db;
+
+        public QuickReplyService(AppDbContext db) => _db = db;
+
+        public async Task<List<QuickReplyDto>> GetAllAsync(Guid businessId, Guid userId,
+            string? search = null, bool includeBusiness = true, bool includePersonal = true)
+        {
+            var q = _db.Set<QuickReply>()
+                .AsNoTracking()
+                .Where(qr => qr.BusinessId == businessId && !qr.IsDeleted && qr.IsActive);
+
+            if (!includeBusiness) q = q.Where(x => x.Scope == QuickReplyScope.Personal);
+            if (!includePersonal) q = q.Where(x => x.Scope == QuickReplyScope.Business);
+            if (includePersonal && includeBusiness == false)
+                q = q.Where(x => x.OwnerUserId == userId || x.Scope == QuickReplyScope.Business);
+            else if (includePersonal)
+                q = q.Where(x => x.Scope == QuickReplyScope.Business || x.OwnerUserId == userId);
+
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var s = search.Trim().ToLower();
+                q = q.Where(x =>
+                    x.Title.ToLower().Contains(s) ||
+                    x.Body.ToLower().Contains(s) ||
+                    (x.TagsCsv != null && x.TagsCsv.ToLower().Contains(s)));
+            }
+
+            return await q
+                .OrderByDescending(x => x.Scope)
+                .ThenBy(x => x.Title)
+                .Select(x => new QuickReplyDto
+                {
+                    Id = x.Id,
+                    BusinessId = x.BusinessId,
+                    OwnerUserId = x.OwnerUserId,
+                    Scope = x.Scope,
+                    Title = x.Title,
+                    Body = x.Body,
+                    TagsCsv = x.TagsCsv,
+                    Language = x.Language,
+                    IsActive = x.IsActive,
+                    UpdatedAt = x.UpdatedAt
+                }).ToListAsync();
+        }
+
+        public async Task<ResponseResult> CreateAsync(Guid businessId, Guid userId, string actor, QuickReplyCreateDto dto)
+        {
+            try
+            {
+                var entity = new QuickReply
+                {
+                    Id = Guid.NewGuid(),
+                    BusinessId = businessId,
+                    OwnerUserId = dto.Scope == QuickReplyScope.Personal ? userId : null,
+                    Scope = dto.Scope,
+                    Title = dto.Title.Trim(),
+                    Body = dto.Body,
+                    TagsCsv = dto.TagsCsv,
+                    Language = dto.Language,
+                    IsActive = true,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                    CreatedBy = actor,
+                    UpdatedBy = actor
+                };
+
+                _db.Add(entity);
+                await _db.SaveChangesAsync();
+
+                Log.Information("QuickReply created {@QuickReplyId} for business {@BusinessId} by {@Actor}",
+                    entity.Id, businessId, actor);
+
+                return ResponseResult.SuccessInfo("✅ Quick reply created.");
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error creating quick reply for business {BusinessId}", businessId);
+                return ResponseResult.ErrorInfo("❌ Failed to create quick reply.", ex.ToString()); // pattern like Campaign. :contentReference[oaicite:3]{index=3}
+            }
+        }
+
+        public async Task<ResponseResult> UpdateAsync(Guid businessId, Guid userId, string actor, Guid id, QuickReplyUpdateDto dto)
+        {
+            try
+            {
+                var entity = await _db.Set<QuickReply>()
+                    .FirstOrDefaultAsync(x => x.Id == id && x.BusinessId == businessId && !x.IsDeleted);
+
+                if (entity == null)
+                    return ResponseResult.ErrorInfo("❌ Quick reply not found.");
+
+                // Only owner can edit personal; business-scope allowed for now
+                if (entity.Scope == QuickReplyScope.Personal && entity.OwnerUserId != userId)
+                    return ResponseResult.ErrorInfo("⛔ You cannot edit another user's personal quick reply.");
+
+                entity.Title = dto.Title.Trim();
+                entity.Body = dto.Body;
+                entity.TagsCsv = dto.TagsCsv;
+                entity.Language = dto.Language;
+                entity.IsActive = dto.IsActive;
+                entity.UpdatedAt = DateTime.UtcNow;
+                entity.UpdatedBy = actor;
+
+                await _db.SaveChangesAsync();
+
+                Log.Information("QuickReply updated {@QuickReplyId} for business {@BusinessId} by {@Actor}",
+                    id, businessId, actor);
+
+                return ResponseResult.SuccessInfo("✅ Quick reply updated.");
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error updating quick reply {@QuickReplyId} for business {BusinessId}", id, businessId);
+                return ResponseResult.ErrorInfo("❌ Failed to update quick reply.", ex.ToString()); // campaign-style. :contentReference[oaicite:4]{index=4}
+            }
+        }
+
+        public async Task<ResponseResult> ToggleActiveAsync(Guid businessId, Guid userId, string actor, Guid id, bool isActive)
+        {
+            try
+            {
+                var entity = await _db.Set<QuickReply>()
+                    .FirstOrDefaultAsync(x => x.Id == id && x.BusinessId == businessId && !x.IsDeleted);
+
+                if (entity == null)
+                    return ResponseResult.ErrorInfo("❌ Quick reply not found.");
+
+                if (entity.Scope == QuickReplyScope.Personal && entity.OwnerUserId != userId)
+                    return ResponseResult.ErrorInfo("⛔ You cannot modify another user's personal quick reply.");
+
+                entity.IsActive = isActive;
+                entity.UpdatedAt = DateTime.UtcNow;
+                entity.UpdatedBy = actor;
+                await _db.SaveChangesAsync();
+
+                Log.Information("QuickReply toggled {@QuickReplyId} -> {IsActive} by {@Actor}",
+                    id, isActive, actor);
+
+                return ResponseResult.SuccessInfo(isActive ? "✅ Enabled." : "✅ Disabled.");
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error toggling quick reply {@QuickReplyId}", id);
+                return ResponseResult.ErrorInfo("❌ Failed to toggle quick reply.", ex.ToString());
+            }
+        }
+
+        public async Task<ResponseResult> DeleteAsync(Guid businessId, Guid userId, string actor, Guid id)
+        {
+            try
+            {
+                var entity = await _db.Set<QuickReply>()
+                    .FirstOrDefaultAsync(x => x.Id == id && x.BusinessId == businessId && !x.IsDeleted);
+
+                if (entity == null)
+                    return ResponseResult.ErrorInfo("❌ Quick reply not found.");
+
+                if (entity.Scope == QuickReplyScope.Personal && entity.OwnerUserId != userId)
+                    return ResponseResult.ErrorInfo("⛔ You cannot delete another user's personal quick reply.");
+
+                entity.IsDeleted = true;
+                entity.IsActive = false;
+                entity.UpdatedAt = DateTime.UtcNow;
+                entity.UpdatedBy = actor;
+
+                await _db.SaveChangesAsync();
+
+                Log.Information("QuickReply soft-deleted {@QuickReplyId} by {@Actor}", id, actor);
+                return ResponseResult.SuccessInfo("🗑️ Deleted.");
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error deleting quick reply {@QuickReplyId}", id);
+                return ResponseResult.ErrorInfo("❌ Failed to delete quick reply.", ex.ToString());
+            }
+        }
+    }
+}
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\Services\UnreadCountService.cs 
+====================================================== 
+ 
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using xbytechat.api.Shared;
+
+namespace xbytechat.api.Features.Inbox.Services
+{
+    public class UnreadCountService : IUnreadCountService
+    {
+        private readonly AppDbContext _db;
+
+        public UnreadCountService(AppDbContext db)
+        {
+            _db = db;
+        }
+
+        public async Task<Dictionary<Guid, int>> GetUnreadCountsAsync(Guid businessId, Guid userId)
+        {
+            if (businessId == Guid.Empty || userId == Guid.Empty)
+                return new Dictionary<Guid, int>();
+
+            var userReads = _db.ContactReads.AsNoTracking()
+                .Where(r => r.BusinessId == businessId && r.UserId == userId);
+
+            var query = _db.MessageLogs.AsNoTracking()
+                .Where(m => m.BusinessId == businessId && m.IsIncoming && m.ContactId != null)
+                .GroupJoin(
+                    userReads,
+                    m => m.ContactId,
+                    r => r.ContactId,
+                    (m, rj) => new { m, rj }
+                )
+                .SelectMany(x => x.rj.DefaultIfEmpty(), (x, r) => new { x.m, r })
+                .Where(x => x.r == null || (x.m.SentAt ?? x.m.CreatedAt) > x.r.LastReadAt)
+                .GroupBy(x => x.m.ContactId!.Value)
+                .Select(g => new { ContactId = g.Key, Count = g.Count() });
+
+            return await query.ToDictionaryAsync(x => x.ContactId, x => x.Count);
+        }
+    }
+}
+
+
+
+ 
+ 
+====================================================== 
+FILE: D:\xbytechat\xbytechat-api\xbytechat-api\Features\Inbox\SignalR\NameUserIdProvider.cs 
+====================================================== 
+ 
+﻿using Microsoft.AspNetCore.SignalR;
+using System.Security.Claims;
+
+namespace xbytechat.api.SignalR
+{
+    public sealed class NameUserIdProvider : IUserIdProvider
+    {
+        public string? GetUserId(HubConnectionContext connection)
+        {
+            var user = connection.User;
+            if (user == null) return null;
+
+            // Prefer NameIdentifier
+            var id = user.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (!string.IsNullOrWhiteSpace(id)) return id;
+
+            // Fallbacks (depending on how JWT was created)
+            id = user.FindFirstValue("sub");
+            if (!string.IsNullOrWhiteSpace(id)) return id;
+
+            id = user.FindFirstValue("userId");
+            if (!string.IsNullOrWhiteSpace(id)) return id;
+
+            return null;
+        }
+    }
+}
+ 
+ 

@@ -280,12 +280,43 @@ namespace xbytechat.api.Features.Entitlements.Services
                 .Select(b => b.PlanId)
                 .FirstAsync(ct);
 
-            // Permission codes for this plan
-            var grantedPerms = await _db.PlanPermissions
+            var now = DateTime.UtcNow;
+
+            // ✅ Permission codes for this plan (base)
+            var planPerms = await _db.PlanPermissions
                 .AsNoTracking()
                 .Where(pp => pp.PlanId == planId && pp.IsActive && pp.Permission.IsActive)
                 .Select(pp => pp.Permission.Code)
                 .ToListAsync(ct);
+
+            // ✅ Make it mutable + deduped
+            var grantedSet = new HashSet<string>(planPerms, StringComparer.OrdinalIgnoreCase);
+
+            // ✅ Apply BUSINESS permission overrides (grant adds, deny removes)
+            // Keeps /entitlements snapshot aligned with JWT minting logic in AuthService
+            var permOverrides = await _db.BusinessPermissionOverrides
+                .AsNoTracking()
+                .Where(o =>
+                    o.BusinessId == businessId &&
+                    !o.IsRevoked &&
+                    (o.ExpiresAtUtc == null || o.ExpiresAtUtc > now) &&
+                    o.Permission.IsActive)
+                .Select(o => new
+                {
+                    Code = o.Permission.Code,
+                    o.IsGranted
+                })
+                .ToListAsync(ct);
+
+            foreach (var o in permOverrides)
+            {
+                if (string.IsNullOrWhiteSpace(o.Code)) continue;
+
+                if (o.IsGranted)
+                    grantedSet.Add(o.Code);
+                else
+                    grantedSet.Remove(o.Code);
+            }
 
             // Quotas – sequential to avoid DbContext concurrency issues
             var planQuotas = await _db.PlanQuotas.AsNoTracking()
@@ -294,10 +325,8 @@ namespace xbytechat.api.Features.Entitlements.Services
 
             var overrides = await _db.BusinessQuotaOverrides.AsNoTracking()
                 .Where(o => o.BusinessId == businessId &&
-                            (o.ExpiresAt == null || o.ExpiresAt > DateTime.UtcNow))
+                            (o.ExpiresAt == null || o.ExpiresAt > now))
                 .ToListAsync(ct);
-
-            var now = DateTime.UtcNow;
 
             var items = new List<QuotaSnapshotItemDto>();
 
@@ -333,7 +362,7 @@ namespace xbytechat.api.Features.Entitlements.Services
 
             return new EntitlementsSnapshotDto
             {
-                GrantedPermissions = grantedPerms,
+                GrantedPermissions = grantedSet.OrderBy(x => x).ToList(),
                 Quotas = items
             };
         }

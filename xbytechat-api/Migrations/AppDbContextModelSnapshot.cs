@@ -155,8 +155,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CampaignId")
-                        .HasDatabaseName("IX_MessageLogs_Campaign");
+                    b.HasIndex("CampaignId");
 
                     b.HasIndex("ContactId");
 
@@ -184,6 +183,14 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("BusinessId", "RecipientNumber")
                         .HasDatabaseName("IX_MessageLogs_Business_Recipient");
+
+                    b.HasIndex("BusinessId", "ContactId", "CreatedAt");
+
+                    b.HasIndex("BusinessId", "ContactId", "IsIncoming", "CreatedAt");
+
+                    b.HasIndex("BusinessId", "ContactId", "MessageTime", "Id")
+                        .IsDescending(false, false, true, true)
+                        .HasDatabaseName("ix_msglogs_biz_contact_msgtime_id");
 
                     b.HasIndex("BusinessId", "IsIncoming", "ContactId", "MessageTime")
                         .HasDatabaseName("ix_msglogs_biz_in_contact_msgtime");
@@ -392,245 +399,6 @@ namespace xbytechat.api.Migrations
                         .HasDatabaseName("IX_WAT_Business_Provider_IsActive_Sort");
 
                     b.ToTable("WhatsAppTemplates", (string)null);
-                });
-
-            modelBuilder.Entity("xbytechat.api.CRM.Models.Contact", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid?>("AssignedAgentId")
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid>("BusinessId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Email")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
-
-                    b.Property<string>("Group")
-                        .HasColumnType("text");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("IsArchived")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("IsAutomationPaused")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("IsFavorite")
-                        .HasColumnType("boolean");
-
-                    b.Property<DateTime?>("LastCTAInteraction")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("LastCTAType")
-                        .HasColumnType("text");
-
-                    b.Property<Guid?>("LastClickedProductId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime?>("LastContactedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("LeadSource")
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
-
-                    b.Property<DateTime?>("NextFollowUpAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Notes")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
-
-                    b.Property<string>("PhoneNumber")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)");
-
-                    b.Property<string>("ProfileName")
-                        .HasColumnType("text");
-
-                    b.Property<DateTime?>("ProfileNameUpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Tags")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("BusinessId", "PhoneNumber")
-                        .IsUnique();
-
-                    b.ToTable("Contacts");
-                });
-
-            modelBuilder.Entity("xbytechat.api.CRM.Models.Note", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid?>("BusinessId")
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid?>("ContactId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Content")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("CreatedBy")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<DateTime?>("EditedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<bool>("IsInternal")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("IsPinned")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("Source")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("Title")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("Notes");
-                });
-
-            modelBuilder.Entity("xbytechat.api.CRM.Models.Reminder", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid>("BusinessId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime?>("CompletedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<Guid>("ContactId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Description")
-                        .HasColumnType("text");
-
-                    b.Property<DateTime>("DueAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<bool>("FollowUpSent")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("IsRecurring")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("LastCTAType")
-                        .HasColumnType("text");
-
-                    b.Property<DateTime?>("LastClickedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("LinkedCampaign")
-                        .HasColumnType("text");
-
-                    b.Property<int?>("Priority")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("RecurrencePattern")
-                        .HasColumnType("text");
-
-                    b.Property<string>("ReminderType")
-                        .HasColumnType("text");
-
-                    b.Property<bool>("SendWhatsappNotification")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("Title")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<DateTime?>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("Reminders");
-                });
-
-            modelBuilder.Entity("xbytechat.api.CRM.Models.Tag", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid>("BusinessId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Category")
-                        .HasColumnType("text");
-
-                    b.Property<string>("ColorHex")
-                        .HasColumnType("text");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("IsSystemTag")
-                        .HasColumnType("boolean");
-
-                    b.Property<DateTime?>("LastUsedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("Notes")
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("Tags");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.AccessControl.Models.Permission", b =>
@@ -1087,8 +855,6 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("PermissionId");
 
-                    b.HasIndex("PlanId");
-
                     b.HasIndex("PlanId", "PermissionId")
                         .IsUnique()
                         .HasDatabaseName("UX_PlanPermissions_Plan_Permission");
@@ -1100,6 +866,9 @@ namespace xbytechat.api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("BusinessId")
                         .HasColumnType("uuid");
 
                     b.Property<DateTime>("CreatedAt")
@@ -1119,6 +888,14 @@ namespace xbytechat.api.Migrations
                         .HasColumnType("text");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("Name")
+                        .IsUnique()
+                        .HasFilter("\"BusinessId\" IS NULL");
+
+                    b.HasIndex("BusinessId", "Name")
+                        .IsUnique()
+                        .HasFilter("\"BusinessId\" IS NOT NULL");
 
                     b.ToTable("Roles");
 
@@ -1571,6 +1348,9 @@ namespace xbytechat.api.Migrations
                     b.Property<string>("DeletedBy")
                         .HasColumnType("text");
 
+                    b.Property<int>("InboxVisibilityMode")
+                        .HasColumnType("integer");
+
                     b.Property<string>("Industry")
                         .HasColumnType("text");
 
@@ -1615,6 +1395,321 @@ namespace xbytechat.api.Migrations
                     b.HasIndex("PlanId");
 
                     b.ToTable("Businesses");
+                });
+
+            modelBuilder.Entity("xbytechat.api.Features.CRM.Models.Contact", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("AssignedAgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Email")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Group")
+                        .HasColumnType("text");
+
+                    b.Property<string>("InboxStatus")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsArchived")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsAutomationPaused")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsFavorite")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("LastCTAInteraction")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LastCTAType")
+                        .HasColumnType("text");
+
+                    b.Property<Guid?>("LastClickedProductId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("LastContactedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("LastInboundAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("LastOutboundAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LeadSource")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTime?>("NextFollowUpAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("PhoneNumber")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("ProfileName")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("ProfileNameUpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Tags")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessId", "Id")
+                        .HasDatabaseName("ix_contacts_biz_id");
+
+                    b.HasIndex("BusinessId", "PhoneNumber")
+                        .IsUnique();
+
+                    b.ToTable("Contacts");
+                });
+
+            modelBuilder.Entity("xbytechat.api.Features.CRM.Models.Note", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("BusinessId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("ContactId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("EditedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsInternal")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsPinned")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Notes");
+                });
+
+            modelBuilder.Entity("xbytechat.api.Features.CRM.Models.Reminder", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("ContactId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("DueAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("FollowUpSent")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsRecurring")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("LastCTAType")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("LastClickedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LinkedCampaign")
+                        .HasColumnType("text");
+
+                    b.Property<int?>("Priority")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("RecurrencePattern")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ReminderType")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("SendWhatsappNotification")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Reminders");
+                });
+
+            modelBuilder.Entity("xbytechat.api.Features.CRM.Models.Tag", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Category")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ColorHex")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsSystemTag")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("LastUsedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Notes")
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Tags");
+                });
+
+            modelBuilder.Entity("xbytechat.api.Features.CRM.Timelines.Models.LeadTimeline", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("CTASourceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CTASourceType")
+                        .HasColumnType("text");
+
+                    b.Property<string>("CTAType")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Category")
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("ContactId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Data")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsSystemGenerated")
+                        .HasColumnType("boolean");
+
+                    b.Property<Guid?>("ReferenceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Source")
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessId");
+
+                    b.HasIndex("ContactId");
+
+                    b.ToTable("LeadTimelines");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CTAFlowBuilder.Models.CTAFlowConfig", b =>
@@ -1883,9 +1978,6 @@ namespace xbytechat.api.Migrations
                     b.Property<Guid>("BusinessId")
                         .HasColumnType("uuid");
 
-                    b.Property<Guid?>("CampaignId")
-                        .HasColumnType("uuid");
-
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -1912,16 +2004,17 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CampaignId");
-
                     b.HasIndex("CsvBatchId");
-
-                    b.HasIndex("BusinessId", "CampaignId");
 
                     b.HasIndex("BusinessId", "CsvBatchId");
 
                     b.HasIndex("BusinessId", "IsDeleted")
                         .HasDatabaseName("ix_audiences_biz_deleted");
+
+                    b.HasIndex("BusinessId", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("UX_Audiences_Biz_Name_Active")
+                        .HasFilter("\"IsDeleted\" = FALSE");
 
                     b.ToTable("Audiences", (string)null);
                 });
@@ -1985,7 +2078,8 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("AudienceId", "PhoneE164")
                         .IsUnique()
-                        .HasDatabaseName("ux_audmember_audience_phone");
+                        .HasDatabaseName("UX_AudienceMembers_Audience_PhoneE164")
+                        .HasFilter("\"PhoneE164\" IS NOT NULL AND \"PhoneE164\" <> ''");
 
                     b.ToTable("AudienceMembers", (string)null);
                 });
@@ -1994,9 +2088,6 @@ namespace xbytechat.api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid?>("AudienceId")
                         .HasColumnType("uuid");
 
                     b.Property<Guid>("BusinessId")
@@ -2085,15 +2176,71 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("BusinessId");
-
                     b.HasIndex("CTAFlowConfigId");
 
                     b.HasIndex("CtaId");
 
                     b.HasIndex("SourceCampaignId");
 
+                    b.HasIndex("BusinessId", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("UX_Campaigns_Biz_Name");
+
                     b.ToTable("Campaigns");
+                });
+
+            modelBuilder.Entity("xbytechat.api.Features.CampaignModule.Models.CampaignAudienceAttachment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AudienceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CampaignId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CsvBatchId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("DeactivatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DeactivatedBy")
+                        .HasColumnType("text");
+
+                    b.Property<string>("FileName")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AudienceId");
+
+                    b.HasIndex("CampaignId");
+
+                    b.HasIndex("CsvBatchId");
+
+                    b.HasIndex("BusinessId", "AudienceId");
+
+                    b.HasIndex("BusinessId", "CampaignId")
+                        .IsUnique()
+                        .HasFilter("\"IsActive\" = TRUE");
+
+                    b.HasIndex("BusinessId", "CsvBatchId");
+
+                    b.ToTable("CampaignAudienceAttachments", (string)null);
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CampaignModule.Models.CampaignButton", b =>
@@ -2643,8 +2790,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CampaignId")
-                        .HasDatabaseName("IX_CampaignSendLogs_Campaign");
+                    b.HasIndex("CampaignId");
 
                     b.HasIndex("ContactId");
 
@@ -2882,6 +3028,112 @@ namespace xbytechat.api.Migrations
                     b.ToTable("Products");
                 });
 
+            modelBuilder.Entity("xbytechat.api.Features.CustomFields.Models.CustomFieldDefinition", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DataType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<string>("EntityType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsRequired")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("OptionsJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessId", "EntityType", "IsActive")
+                        .HasDatabaseName("IX_CustomFieldDefinitions_Biz_Entity_Active");
+
+                    b.HasIndex("BusinessId", "EntityType", "Key")
+                        .IsUnique()
+                        .HasDatabaseName("UX_CustomFieldDefinitions_Biz_Entity_Key");
+
+                    b.ToTable("CustomFieldDefinitions", (string)null);
+                });
+
+            modelBuilder.Entity("xbytechat.api.Features.CustomFields.Models.CustomFieldValue", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("EntityId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("EntityType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<Guid>("FieldId")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ValueJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FieldId");
+
+                    b.HasIndex("BusinessId", "EntityType", "EntityId")
+                        .HasDatabaseName("IX_CustomFieldValues_Biz_Entity_Record");
+
+                    b.HasIndex("BusinessId", "EntityType", "EntityId", "FieldId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_CustomFieldValues_Biz_Entity_Record_Field");
+
+                    b.ToTable("CustomFieldValues", (string)null);
+                });
+
             modelBuilder.Entity("xbytechat.api.Features.CustomeApi.Models.ApiKey", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3076,6 +3328,57 @@ namespace xbytechat.api.Migrations
                     b.ToTable("IntegrationFlags", (string)null);
                 });
 
+            modelBuilder.Entity("xbytechat.api.Features.Entitlements.Models.BusinessPermissionOverride", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsGranted")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsRevoked")
+                        .HasColumnType("boolean");
+
+                    b.Property<Guid>("PermissionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAtUtc")
+                        .HasDatabaseName("IX_BizPermOverrides_ExpiresAt");
+
+                    b.HasIndex("PermissionId");
+
+                    b.HasIndex("BusinessId", "IsRevoked")
+                        .HasDatabaseName("IX_BizPermOverrides_Business_Revoked");
+
+                    b.HasIndex("BusinessId", "PermissionId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_BizPermOverrides_Business_Permission");
+
+                    b.ToTable("BusinessPermissionOverrides", (string)null);
+                });
+
             modelBuilder.Entity("xbytechat.api.Features.Entitlements.Models.BusinessQuotaOverride", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3211,6 +3514,8 @@ namespace xbytechat.api.Migrations
                         .HasColumnType("text");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("BusinessId", "ContactId");
 
                     b.ToTable("ChatSessionStates");
                 });
@@ -4072,68 +4377,6 @@ namespace xbytechat.api.Migrations
                     b.ToTable("WhatsAppPhoneNumbers", (string)null);
                 });
 
-            modelBuilder.Entity("xbytechat.api.Features.xbTimelines.Models.LeadTimeline", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<Guid>("BusinessId")
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid?>("CTASourceId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("CTASourceType")
-                        .HasColumnType("text");
-
-                    b.Property<string>("CTAType")
-                        .HasColumnType("text");
-
-                    b.Property<string>("Category")
-                        .HasColumnType("text");
-
-                    b.Property<Guid>("ContactId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("CreatedBy")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("Data")
-                        .HasColumnType("text");
-
-                    b.Property<string>("Description")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("EventType")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<bool>("IsSystemGenerated")
-                        .HasColumnType("boolean");
-
-                    b.Property<Guid?>("ReferenceId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Source")
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("BusinessId");
-
-                    b.HasIndex("ContactId");
-
-                    b.ToTable("LeadTimelines");
-                });
-
             modelBuilder.Entity("xbytechat.api.Models.BusinessModel.BusinessPlanInfo", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4312,13 +4555,13 @@ namespace xbytechat.api.Migrations
 
             modelBuilder.Entity("ContactTag", b =>
                 {
-                    b.HasOne("xbytechat.api.CRM.Models.Contact", "Contact")
+                    b.HasOne("xbytechat.api.Features.CRM.Models.Contact", "Contact")
                         .WithMany("ContactTags")
                         .HasForeignKey("ContactId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("xbytechat.api.CRM.Models.Tag", "Tag")
+                    b.HasOne("xbytechat.api.Features.CRM.Models.Tag", "Tag")
                         .WithMany("ContactTags")
                         .HasForeignKey("TagId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -4342,7 +4585,7 @@ namespace xbytechat.api.Migrations
                         .HasForeignKey("CampaignId")
                         .OnDelete(DeleteBehavior.Cascade);
 
-                    b.HasOne("xbytechat.api.CRM.Models.Contact", "Contact")
+                    b.HasOne("xbytechat.api.Features.CRM.Models.Contact", "Contact")
                         .WithMany()
                         .HasForeignKey("ContactId");
 
@@ -4368,17 +4611,6 @@ namespace xbytechat.api.Migrations
                     b.Navigation("Role");
                 });
 
-            modelBuilder.Entity("xbytechat.api.CRM.Models.Contact", b =>
-                {
-                    b.HasOne("xbytechat.api.Features.BusinessModule.Models.Business", "Business")
-                        .WithMany()
-                        .HasForeignKey("BusinessId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Business");
-                });
-
             modelBuilder.Entity("xbytechat.api.Features.AccessControl.Models.PlanPermission", b =>
                 {
                     b.HasOne("xbytechat.api.Features.AccessControl.Models.Permission", "Permission")
@@ -4396,6 +4628,16 @@ namespace xbytechat.api.Migrations
                     b.Navigation("Permission");
 
                     b.Navigation("Plan");
+                });
+
+            modelBuilder.Entity("xbytechat.api.Features.AccessControl.Models.Role", b =>
+                {
+                    b.HasOne("xbytechat.api.Features.BusinessModule.Models.Business", "Business")
+                        .WithMany("Roles")
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Business");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.AccessControl.Models.RolePermission", b =>
@@ -4489,6 +4731,36 @@ namespace xbytechat.api.Migrations
                     b.Navigation("Plan");
                 });
 
+            modelBuilder.Entity("xbytechat.api.Features.CRM.Models.Contact", b =>
+                {
+                    b.HasOne("xbytechat.api.Features.BusinessModule.Models.Business", "Business")
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Business");
+                });
+
+            modelBuilder.Entity("xbytechat.api.Features.CRM.Timelines.Models.LeadTimeline", b =>
+                {
+                    b.HasOne("xbytechat.api.Features.BusinessModule.Models.Business", "Business")
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("xbytechat.api.Features.CRM.Models.Contact", "Contact")
+                        .WithMany()
+                        .HasForeignKey("ContactId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Business");
+
+                    b.Navigation("Contact");
+                });
+
             modelBuilder.Entity("xbytechat.api.Features.CTAFlowBuilder.Models.CTAFlowStep", b =>
                 {
                     b.HasOne("xbytechat.api.Features.CTAFlowBuilder.Models.CTAFlowConfig", "Flow")
@@ -4521,17 +4793,10 @@ namespace xbytechat.api.Migrations
 
             modelBuilder.Entity("xbytechat.api.Features.CampaignModule.Models.Audience", b =>
                 {
-                    b.HasOne("xbytechat.api.Features.CampaignModule.Models.Campaign", "Campaign")
-                        .WithMany("Audiences")
-                        .HasForeignKey("CampaignId")
-                        .OnDelete(DeleteBehavior.Cascade);
-
                     b.HasOne("xbytechat.api.Features.CampaignModule.Models.CsvBatch", "CsvBatch")
                         .WithMany()
                         .HasForeignKey("CsvBatchId")
                         .OnDelete(DeleteBehavior.SetNull);
-
-                    b.Navigation("Campaign");
 
                     b.Navigation("CsvBatch");
                 });
@@ -4577,6 +4842,41 @@ namespace xbytechat.api.Migrations
                     b.Navigation("SourceCampaign");
                 });
 
+            modelBuilder.Entity("xbytechat.api.Features.CampaignModule.Models.CampaignAudienceAttachment", b =>
+                {
+                    b.HasOne("xbytechat.api.Features.CampaignModule.Models.Audience", "Audience")
+                        .WithMany()
+                        .HasForeignKey("AudienceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("xbytechat.api.Features.BusinessModule.Models.Business", "Business")
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("xbytechat.api.Features.CampaignModule.Models.Campaign", "Campaign")
+                        .WithMany("AudienceAttachments")
+                        .HasForeignKey("CampaignId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("xbytechat.api.Features.CampaignModule.Models.CsvBatch", "CsvBatch")
+                        .WithMany()
+                        .HasForeignKey("CsvBatchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Audience");
+
+                    b.Navigation("Business");
+
+                    b.Navigation("Campaign");
+
+                    b.Navigation("CsvBatch");
+                });
+
             modelBuilder.Entity("xbytechat.api.Features.CampaignModule.Models.CampaignButton", b =>
                 {
                     b.HasOne("xbytechat.api.Features.CampaignModule.Models.Campaign", "Campaign")
@@ -4618,7 +4918,7 @@ namespace xbytechat.api.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("xbytechat.api.CRM.Models.Contact", "Contact")
+                    b.HasOne("xbytechat.api.Features.CRM.Models.Contact", "Contact")
                         .WithMany()
                         .HasForeignKey("ContactId")
                         .OnDelete(DeleteBehavior.SetNull);
@@ -4670,7 +4970,7 @@ namespace xbytechat.api.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("xbytechat.api.CRM.Models.Contact", "Contact")
+                    b.HasOne("xbytechat.api.Features.CRM.Models.Contact", "Contact")
                         .WithMany()
                         .HasForeignKey("ContactId")
                         .OnDelete(DeleteBehavior.SetNull);
@@ -4697,6 +4997,36 @@ namespace xbytechat.api.Migrations
                     b.Navigation("MessageLog");
 
                     b.Navigation("Recipient");
+                });
+
+            modelBuilder.Entity("xbytechat.api.Features.CustomFields.Models.CustomFieldValue", b =>
+                {
+                    b.HasOne("xbytechat.api.Features.CustomFields.Models.CustomFieldDefinition", "Field")
+                        .WithMany()
+                        .HasForeignKey("FieldId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Field");
+                });
+
+            modelBuilder.Entity("xbytechat.api.Features.Entitlements.Models.BusinessPermissionOverride", b =>
+                {
+                    b.HasOne("xbytechat.api.Features.BusinessModule.Models.Business", "Business")
+                        .WithMany()
+                        .HasForeignKey("BusinessId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("xbytechat.api.Features.AccessControl.Models.Permission", "Permission")
+                        .WithMany()
+                        .HasForeignKey("PermissionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Business");
+
+                    b.Navigation("Permission");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.MessageManagement.DTOs.MessageStatusLog", b =>
@@ -4821,7 +5151,7 @@ namespace xbytechat.api.Migrations
                         .HasForeignKey("CampaignSendLogId")
                         .OnDelete(DeleteBehavior.Restrict);
 
-                    b.HasOne("xbytechat.api.CRM.Models.Contact", "Contact")
+                    b.HasOne("xbytechat.api.Features.CRM.Models.Contact", "Contact")
                         .WithMany()
                         .HasForeignKey("ContactId");
 
@@ -4847,25 +5177,6 @@ namespace xbytechat.api.Migrations
                         .HasPrincipalKey("BusinessId", "Provider")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
-                });
-
-            modelBuilder.Entity("xbytechat.api.Features.xbTimelines.Models.LeadTimeline", b =>
-                {
-                    b.HasOne("xbytechat.api.Features.BusinessModule.Models.Business", "Business")
-                        .WithMany()
-                        .HasForeignKey("BusinessId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("xbytechat.api.CRM.Models.Contact", "Contact")
-                        .WithMany()
-                        .HasForeignKey("ContactId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Business");
-
-                    b.Navigation("Contact");
                 });
 
             modelBuilder.Entity("xbytechat.api.Models.BusinessModel.BusinessPlanInfo", b =>
@@ -4895,16 +5206,6 @@ namespace xbytechat.api.Migrations
                     b.Navigation("SendLogs");
 
                     b.Navigation("UserPermissions");
-                });
-
-            modelBuilder.Entity("xbytechat.api.CRM.Models.Contact", b =>
-                {
-                    b.Navigation("ContactTags");
-                });
-
-            modelBuilder.Entity("xbytechat.api.CRM.Models.Tag", b =>
-                {
-                    b.Navigation("ContactTags");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.AccessControl.Models.Permission", b =>
@@ -4938,9 +5239,21 @@ namespace xbytechat.api.Migrations
 
                     b.Navigation("MessageStatusLogs");
 
+                    b.Navigation("Roles");
+
                     b.Navigation("Users");
 
                     b.Navigation("WhatsAppSettings");
+                });
+
+            modelBuilder.Entity("xbytechat.api.Features.CRM.Models.Contact", b =>
+                {
+                    b.Navigation("ContactTags");
+                });
+
+            modelBuilder.Entity("xbytechat.api.Features.CRM.Models.Tag", b =>
+                {
+                    b.Navigation("ContactTags");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CTAFlowBuilder.Models.CTAFlowConfig", b =>
@@ -4960,7 +5273,7 @@ namespace xbytechat.api.Migrations
 
             modelBuilder.Entity("xbytechat.api.Features.CampaignModule.Models.Campaign", b =>
                 {
-                    b.Navigation("Audiences");
+                    b.Navigation("AudienceAttachments");
 
                     b.Navigation("MessageLogs");
 

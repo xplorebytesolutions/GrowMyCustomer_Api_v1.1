@@ -818,7 +818,8 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     RawResponse = sendResult.RawResponse,
                     CreatedAt = DateTime.UtcNow,
                     SentAt = DateTime.UtcNow,
-                    MessageId = messageId
+                    MessageId = messageId,
+                    ProviderMessageId = messageId
                 };
 
                 await _db.MessageLogs.AddAsync(log);
@@ -1654,7 +1655,7 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                         RecipientId = recipient.Id,
                         MessageLogId = result?.LogId,
                         SendStatus = result.Success ? "Sent" : "Failed",
-                        SentAt = DateTime.UtcNow,
+                        SentAt = result.Success ? DateTime.UtcNow : (DateTime?)null,
                         CreatedBy = sentBy,
                         BusinessId = businessId,
                     };
@@ -1857,7 +1858,7 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                         RecipientId = r.Id,
                         MessageLogId = result?.LogId,
                         SendStatus = result.Success ? "Sent" : "Failed",
-                        SentAt = DateTime.UtcNow,
+                        SentAt = result.Success ? DateTime.UtcNow : (DateTime?)null,
                         CreatedBy = sentBy,
                         BusinessId = businessId,
                     });

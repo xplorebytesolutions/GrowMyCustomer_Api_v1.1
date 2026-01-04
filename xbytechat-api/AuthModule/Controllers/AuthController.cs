@@ -1,12 +1,11 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using xbytechat.api.AuthModule.DTOs;
 using xbytechat.api.AuthModule.Services;
-using xbytechat.api.Features.BusinessModule.DTOs;
-using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
 using xbytechat.api.Features.AccessControl.Services;
+using xbytechat.api.Features.BusinessModule.DTOs;
 
 namespace xbytechat.api.AuthModule.Controllers
 {
@@ -51,6 +50,7 @@ namespace xbytechat.api.AuthModule.Controllers
                 refreshToken = data.refreshToken
             });
         }
+
         // ✅ Signup
         [HttpPost("business-user-signup")]
         public async Task<IActionResult> Signup([FromBody] SignupBusinessDto dto)
@@ -97,8 +97,6 @@ namespace xbytechat.api.AuthModule.Controllers
             return Ok(new { isAuthenticated = true, role, email, plan, businessId = biz });
         }
 
-     
-
         [Authorize]
         [HttpGet("me")]
         public IActionResult Me()
@@ -108,7 +106,8 @@ namespace xbytechat.api.AuthModule.Controllers
             var userId =
                 user.FindFirst(JwtRegisteredClaimNames.Sub)?.Value ??
                 user.FindFirst(ClaimTypes.NameIdentifier)?.Value ??
-                user.FindFirst("uid")?.Value;
+                user.FindFirst("uid")?.Value ??
+                user.FindFirst("id")?.Value;
 
             if (string.IsNullOrWhiteSpace(userId))
             {
@@ -148,123 +147,11 @@ namespace xbytechat.api.AuthModule.Controllers
 
         // -----------------------------------------------------------
         // ✅ Main auth context: /api/auth/context
-        //    This is what your AuthProvider/refreshAuthContext wants.
+        // IMPORTANT: Read permissions/features FROM JWT CLAIMS (source of truth)
         // -----------------------------------------------------------
-        //[Authorize]
-        //[HttpGet("context")]
-        //public async Task<IActionResult> GetContext()
-        //{
-        //    var principal = HttpContext.User;
-
-        //    // --- User id (mandatory) ---
-        //    var userIdStr =
-        //        principal.FindFirst(JwtRegisteredClaimNames.Sub)?.Value ??
-        //        principal.FindFirst(ClaimTypes.NameIdentifier)?.Value ??
-        //        principal.FindFirst("uid")?.Value;
-
-        //    if (!Guid.TryParse(userIdStr, out var userId))
-        //    {
-        //        return Unauthorized(new
-        //        {
-        //            ok = false,
-        //            isAuthenticated = false,
-        //            message = "Invalid or missing user id claim."
-        //        });
-        //    }
-
-        //    // --- Email ---
-        //    var email =
-        //        principal.FindFirst(ClaimTypes.Email)?.Value ??
-        //        principal.FindFirst(JwtRegisteredClaimNames.Email)?.Value ??
-        //        principal.FindFirst("email")?.Value;
-
-        //    // --- Role ---
-        //    var role =
-        //        principal.FindFirst(ClaimTypes.Role)?.Value ??
-        //        principal.FindFirst("role")?.Value ??
-        //        "business";
-
-        //    // --- BusinessId (GUID, optional for some roles) ---
-        //    var businessIdClaim =
-        //        principal.FindFirst("businessId")?.Value ??
-        //        principal.FindFirst("BusinessId")?.Value ??
-        //        principal.FindFirst("business_id")?.Value;
-
-        //    Guid? businessId = null;
-        //    if (Guid.TryParse(businessIdClaim, out var bizGuid))
-        //    {
-        //        businessId = bizGuid;
-        //    }
-
-        //    // --- PlanId (optional) ---
-        //    var planIdClaim =
-        //        principal.FindFirst("plan_id")?.Value ??
-        //        principal.FindFirst("planId")?.Value;
-
-        //    Guid? planId = null;
-        //    if (Guid.TryParse(planIdClaim, out var planGuid))
-        //    {
-        //        planId = planGuid;
-        //    }
-
-        //    // --- Status (active / pending / suspended / etc.) ---
-        //    var status =
-        //        principal.FindFirst("status")?.Value ??
-        //        principal.FindFirst("biz_status")?.Value ??
-        //        principal.FindFirst("businessStatus")?.Value ??
-        //        principal.FindFirst("bizStatus")?.Value ??
-        //        "active";
-
-        //    // --- All-access roles (admin, superadmin, partner, reseller, etc.) ---
-        //    var hasAllAccess =
-        //        role.Equals("admin", StringComparison.OrdinalIgnoreCase) ||
-        //        role.Equals("superadmin", StringComparison.OrdinalIgnoreCase) ||
-        //        role.Equals("partner", StringComparison.OrdinalIgnoreCase) ||
-        //        role.Equals("reseller", StringComparison.OrdinalIgnoreCase);
-
-        //    // --- Permissions from AccessControl service ---
-        //    var permissions = await _accessControlService.GetPermissionsAsync(userId);
-
-        //    // For now, expose the same codes as "features" so the SPA can bootstrap.
-        //    // Entitlements API remains the long-term source of truth.
-        //    var features = permissions;
-
-        //    // --- Build the shape expected by AuthProvider.refreshAuthContext ---
-        //    return Ok(new
-        //    {
-        //        ok = true,
-        //        isAuthenticated = true,
-
-        //        // Used by AuthProvider + ProtectedRoute
-        //        user = new
-        //        {
-        //            id = userId,
-        //            email,
-        //            role
-        //        },
-
-        //        business = businessId.HasValue
-        //            ? new
-        //            {
-        //                id = businessId.Value,
-        //                businessId = businessId.Value,
-        //                planId = planId,
-        //                status
-        //            }
-        //            : null,
-
-        //        businessId = businessId,
-        //        role,
-        //        status,
-        //        hasAllAccess,
-        //        permissions,
-        //        features,
-        //        planId
-        //    });
-        //}
         [Authorize]
         [HttpGet("context")]
-        public async Task<IActionResult> GetContext()
+        public IActionResult GetContext()
         {
             var principal = HttpContext.User;
 
@@ -304,7 +191,7 @@ namespace xbytechat.api.AuthModule.Controllers
                 principal.FindFirst("role")?.Value ??
                 "business";
 
-            // --- BusinessId (GUID, optional for some roles) ---
+            // --- BusinessId (optional) ---
             var businessIdClaim =
                 principal.FindFirst("businessId")?.Value ??
                 principal.FindFirst("BusinessId")?.Value ??
@@ -312,9 +199,7 @@ namespace xbytechat.api.AuthModule.Controllers
 
             Guid? businessId = null;
             if (Guid.TryParse(businessIdClaim, out var bizGuid))
-            {
                 businessId = bizGuid;
-            }
 
             // --- PlanId (optional) ---
             var planIdClaim =
@@ -323,11 +208,9 @@ namespace xbytechat.api.AuthModule.Controllers
 
             Guid? planId = null;
             if (Guid.TryParse(planIdClaim, out var planGuid))
-            {
                 planId = planGuid;
-            }
 
-            // --- Status (active / pending / suspended / etc.) ---
+            // --- Status ---
             var status =
                 principal.FindFirst("status")?.Value ??
                 principal.FindFirst("biz_status")?.Value ??
@@ -335,33 +218,69 @@ namespace xbytechat.api.AuthModule.Controllers
                 principal.FindFirst("bizStatus")?.Value ??
                 "active";
 
-            // --- Business name / company name (for Topbar display) ---
+            // --- Business name ---
             var companyName =
                 principal.FindFirst("businessName")?.Value ??
                 principal.FindFirst("companyName")?.Value ??
                 principal.FindFirst("bizName")?.Value;
 
-            // --- All-access roles (admin, superadmin, partner, reseller, etc.) ---
+            // --- All-access roles ---
             var hasAllAccess =
                 role.Equals("admin", StringComparison.OrdinalIgnoreCase) ||
                 role.Equals("superadmin", StringComparison.OrdinalIgnoreCase) ||
                 role.Equals("partner", StringComparison.OrdinalIgnoreCase) ||
                 role.Equals("reseller", StringComparison.OrdinalIgnoreCase);
 
-            // --- Permissions from AccessControl service ---
-            var permissions = await _accessControlService.GetPermissionsAsync(userId);
+            // ✅ Permissions from JWT claim(s), not DB recompute
+            var permissions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            // For now, expose the same codes as "features" so the SPA can bootstrap.
-            // Entitlements API remains the long-term source of truth.
-            var features = permissions;
+            foreach (var c in principal.Claims.Where(x => x.Type == "permissions"))
+            {
+                if (string.IsNullOrWhiteSpace(c.Value)) continue;
 
-            // --- Build the shape expected by AuthProvider.refreshAuthContext ---
+                foreach (var p in c.Value.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var code = p.Trim();
+                    if (!string.IsNullOrWhiteSpace(code))
+                        permissions.Add(code);
+                }
+            }
+
+            // Optional: alternate claim name fallback (harmless)
+            var permsAlt = principal.FindFirst("permission")?.Value;
+            if (!string.IsNullOrWhiteSpace(permsAlt))
+            {
+                foreach (var p in permsAlt.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var code = p.Trim();
+                    if (!string.IsNullOrWhiteSpace(code))
+                        permissions.Add(code);
+                }
+            }
+
+            var permsList = permissions.OrderBy(x => x).ToList();
+
+            // ✅ Prefer features claim if present; else fallback to permissions
+            var featuresSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var c in principal.Claims.Where(x => x.Type == "features"))
+            {
+                if (string.IsNullOrWhiteSpace(c.Value)) continue;
+
+                foreach (var f in c.Value.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var key = f.Trim();
+                    if (!string.IsNullOrWhiteSpace(key))
+                        featuresSet.Add(key);
+                }
+            }
+
+            var features = featuresSet.Count > 0 ? featuresSet.OrderBy(x => x).ToList() : permsList;
+
             return Ok(new
             {
                 ok = true,
                 isAuthenticated = true,
-
-                // Used by AuthProvider + ProtectedRoute
                 user = new
                 {
                     id = userId,
@@ -371,7 +290,6 @@ namespace xbytechat.api.AuthModule.Controllers
                     fullName = userName,
                     displayName = userName
                 },
-
                 business = businessId.HasValue
                     ? new
                     {
@@ -383,18 +301,35 @@ namespace xbytechat.api.AuthModule.Controllers
                         status
                     }
                     : null,
-
                 businessId,
                 role,
                 status,
                 hasAllAccess,
-                permissions,
+                permissions = permsList,
                 features,
                 planId
             });
         }
 
+
+        // ----------------- helpers -----------------
+
+        private static List<string> ReadCsvClaim(ClaimsPrincipal principal, string claimType)
+        {
+            var raw = principal.FindFirst(claimType)?.Value;
+            if (string.IsNullOrWhiteSpace(raw)) return new List<string>();
+
+            // Make it stable: trim + distinct (case-insensitive)
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var v = part.Trim();
+                if (!string.IsNullOrWhiteSpace(v))
+                    set.Add(v);
+            }
+
+            return set.OrderBy(x => x).ToList();
+        }
     }
 }
-
-

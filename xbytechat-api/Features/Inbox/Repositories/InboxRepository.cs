@@ -45,10 +45,11 @@ namespace xbytechat.api.Features.Inbox.Repositories
         {
             await _context.SaveChangesAsync();
         }
+
         public async Task<List<MessageLog>> GetMessagesByContactIdAsync(Guid businessId, Guid contactId)
         {
             return await _context.MessageLogs
-                 .Include(m => m.SourceCampaign)
+                .Include(m => m.SourceCampaign)
                 .Where(m => m.BusinessId == businessId && m.ContactId == contactId)
                 .OrderBy(m => m.CreatedAt)
                 .ToListAsync();
@@ -60,11 +61,12 @@ namespace xbytechat.api.Features.Inbox.Repositories
                 .Where(m => m.BusinessId == businessId &&
                             m.IsIncoming &&
                             m.Status != "Read" &&
-                            m.ContactId != null) // ✅ ensure not null
-                .GroupBy(m => m.ContactId!.Value) // ✅ safe cast to Guid
+                            m.ContactId != null)
+                .GroupBy(m => m.ContactId!.Value)
                 .Select(g => new { ContactId = g.Key, Count = g.Count() })
                 .ToDictionaryAsync(x => x.ContactId, x => x.Count);
         }
+
         public async Task MarkMessagesAsReadAsync(Guid businessId, Guid contactId)
         {
             var unreadMessages = await _context.MessageLogs
@@ -72,24 +74,24 @@ namespace xbytechat.api.Features.Inbox.Repositories
                             m.ContactId == contactId &&
                             m.IsIncoming &&
                             m.Status != "Read")
-                .ToListAsync(); 
+                .ToListAsync();
+
             foreach (var msg in unreadMessages)
                 msg.Status = "Read";
 
             await _context.SaveChangesAsync();
         }
+
         public async Task<Dictionary<Guid, int>> GetUnreadCountsForUserAsync(Guid businessId, Guid userId)
         {
-                    var contactReads = await _context.ContactReads
-             .Where(r => r.UserId == userId)
-             .ToDictionaryAsync(r => r.ContactId, r => r.LastReadAt);
+            var contactReads = await _context.ContactReads
+                .Where(r => r.UserId == userId)
+                .ToDictionaryAsync(r => r.ContactId, r => r.LastReadAt);
 
-            // 🟢 Fetch from DB first (no logic yet)
             var allMessages = await _context.MessageLogs
                 .Where(m => m.BusinessId == businessId && m.IsIncoming && m.ContactId != null)
                 .ToListAsync();
 
-            // 🧠 Now calculate in memory
             var unreadCounts = allMessages
                 .GroupBy(m => m.ContactId!.Value)
                 .ToDictionary(
@@ -99,8 +101,28 @@ namespace xbytechat.api.Features.Inbox.Repositories
                         (m.SentAt ?? m.CreatedAt) > contactReads[g.Key])
                 );
 
-
             return unreadCounts;
+        }
+
+        // ✅ Step 4: Soft idempotency lookup (BusinessId + ProviderMessageId/WAMID)
+        // Used by InboxService to avoid inserting duplicate inbound rows when Meta retries webhooks.
+        public async Task<MessageLog?> FindByProviderMessageIdAsync(Guid businessId, string providerMessageId)
+        {
+            if (businessId == Guid.Empty) return null;
+            if (string.IsNullOrWhiteSpace(providerMessageId)) return null;
+
+            var wamid = providerMessageId.Trim();
+
+            // IMPORTANT:
+            // - Use ProviderMessageId only for webhook idempotency.
+            // - Do NOT match against MessageId here (prevents cross-path collisions).
+            return await _context.MessageLogs
+                .AsNoTracking()
+                .FirstOrDefaultAsync(m =>
+                    m.BusinessId == businessId &&
+                    m.ProviderMessageId != null &&
+                    m.ProviderMessageId == wamid
+                );
         }
     }
 }

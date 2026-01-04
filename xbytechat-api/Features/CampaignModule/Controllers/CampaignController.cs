@@ -44,7 +44,7 @@ namespace xbytechat.api.Features.CampaignModule.Controllers
         [HttpGet("get-image-campaign")]
         public async Task<IActionResult> GetAll([FromQuery] string? type)
         {
-            var businessId = GetBusinessIdOrThrow();
+            var businessId = GetBusinessId();
             var items = await _campaignService.GetAllCampaignsAsync(businessId, type);
             return Ok(items);
         }
@@ -267,7 +267,7 @@ namespace xbytechat.api.Features.CampaignModule.Controllers
         [HttpDelete("{id:guid}")]
         public async Task<IActionResult> DeleteCampaign([FromRoute] Guid id, [FromQuery] bool force = false)
         {
-            var businessId = GetBusinessIdOrThrow();
+            var businessId = GetBusinessId();
             var opt = new CampaignDeletionOptions { Force = force };
             var res = await _campaignService.DeleteCampaignAsync(businessId, id, opt);
 
@@ -304,18 +304,6 @@ namespace xbytechat.api.Features.CampaignModule.Controllers
             };
         }
 
-        private Guid GetBusinessIdOrThrow()
-        {
-            string? raw =
-                User?.FindFirst("business_id")?.Value ??
-                User?.FindFirst("BusinessId")?.Value ??
-                User?.FindFirst("businessId")?.Value ??
-                Request.Headers["X-Business-Id"].FirstOrDefault();
-
-            if (!Guid.TryParse(raw, out var id))
-                throw new UnauthorizedAccessException("Business context missing.");
-            return id;
-        }
         [HttpGet("recipients/{id}")]
         public async Task<IActionResult> GetCampaignRecipients(Guid id)
         {
@@ -363,7 +351,7 @@ namespace xbytechat.api.Features.CampaignModule.Controllers
         [HttpGet("check-name")]
         public async Task<IActionResult> CheckName([FromQuery] string name)
         {
-            var businessId = GetBusinessIdOrThrow();
+            var businessId = GetBusinessId();
             var available = await _campaignService.CheckNameAvailableAsync(businessId, name);
             return Ok(new { available });
         }
@@ -371,7 +359,7 @@ namespace xbytechat.api.Features.CampaignModule.Controllers
         [HttpPut("{id:guid}/reschedule")]
         public async Task<IActionResult> Reschedule([FromRoute] Guid id, [FromBody] RescheduleDto body)
         {
-            var businessId = GetBusinessIdOrThrow();
+            var businessId = GetBusinessId();
             await _campaignService.RescheduleAsync(businessId, id, body.NewUtcTime);
             return Ok(new { ok = true });
         }
@@ -379,7 +367,7 @@ namespace xbytechat.api.Features.CampaignModule.Controllers
         [HttpPost("{id:guid}/enqueue-now")]
         public async Task<IActionResult> EnqueueNow([FromRoute] Guid id)
         {
-            var businessId = GetBusinessIdOrThrow();
+            var businessId = GetBusinessId();
             await _campaignService.EnqueueNowAsync(businessId, id);
             return Ok(new { ok = true });
         }
@@ -387,14 +375,14 @@ namespace xbytechat.api.Features.CampaignModule.Controllers
         [HttpPost("{id:guid}/cancel-schedule")]
         public async Task<IActionResult> CancelSchedule([FromRoute] Guid id)
         {
-            var businessId = GetBusinessIdOrThrow();
+            var businessId = GetBusinessId();
             await _campaignService.CancelScheduleAsync(businessId, id);
             return Ok(new { ok = true });
         }
         [HttpGet("{id:guid}/usage")]
         public async Task<IActionResult> GetCampaignUsage([FromRoute] Guid id)
         {
-            var businessId = GetBusinessIdOrThrow();
+            var businessId = GetBusinessId();
             var usage = await _campaignService.GetCampaignUsageAsync(businessId, id);
             if (usage == null) return NotFound(new { message = "❌ Campaign not found." });
             return Ok(usage);

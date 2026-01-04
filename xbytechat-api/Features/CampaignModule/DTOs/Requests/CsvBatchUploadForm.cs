@@ -11,5 +11,7 @@ namespace xbytechat.api.Features.CampaignModule.DTOs.Requests
 
         [Required]
         public IFormFile File { get; set; } = default!;
+
+        public Guid? CampaignId { get; set; }
     }
 }

@@ -1,17 +1,21 @@
-﻿using Microsoft.EntityFrameworkCore;
-using xbytechat.api.Features.CRM.Models;
+﻿// 📄 File: xbytechat-api/Features/CRM/Services/TagService.cs
+
+using Microsoft.EntityFrameworkCore;
 using xbytechat.api.Features.CRM.Dtos;
 using xbytechat.api.Features.CRM.Interfaces;
-using xbytechat.api.Features.CRM.Timelines.Services;
+using xbytechat.api.Features.CRM.Models;
 using xbytechat.api.Features.CRM.Timelines.DTOs;
+using xbytechat.api.Features.CRM.Timelines.Services;
+using xbytechat.api.Helpers;
 
 namespace xbytechat.api.Features.CRM.Services
 {
     public class TagService : ITagService
     {
         private readonly AppDbContext _db;
-        private readonly ITimelineService _timelineService; // ✅ Injected TimelineService
+        private readonly ITimelineService _timelineService;
         private readonly ILogger<TagService> _logger;
+
         public TagService(AppDbContext db, ITimelineService timelineService, ILogger<TagService> logger)
         {
             _db = db;
@@ -21,16 +25,47 @@ namespace xbytechat.api.Features.CRM.Services
 
         public async Task<TagDto> AddTagAsync(Guid businessId, TagDto dto)
         {
+            var name = (dto.Name ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(name))
+                throw new ArgumentException("Tag name is required.", nameof(dto.Name));
+
+            // ✅ Avoid duplicates (case-insensitive) within a business
+            // NOTE: This is app-level protection; a DB unique index is still recommended later.
+            var nameLower = name.ToLowerInvariant();
+
+            var existing = await _db.Tags
+                .Where(t => t.BusinessId == businessId && t.IsActive)
+                .FirstOrDefaultAsync(t => (t.Name ?? "").ToLower() == nameLower);
+
+            if (existing != null)
+            {
+                return new TagDto
+                {
+                    Id = existing.Id,
+                    Name = existing.Name,
+                    ColorHex = existing.ColorHex,
+                    Category = existing.Category,
+                    Notes = existing.Notes,
+                    IsSystemTag = existing.IsSystemTag,
+                    IsActive = existing.IsActive,
+                    CreatedAt = existing.CreatedAt,
+                    LastUsedAt = existing.LastUsedAt
+                };
+            }
+
             var tag = new Tag
             {
                 Id = Guid.NewGuid(),
                 BusinessId = businessId,
-                Name = dto.Name,
-                ColorHex = dto.ColorHex,
-                Category = dto.Category,
-                Notes = dto.Notes,
+                Name = name,
+                ColorHex = string.IsNullOrWhiteSpace(dto.ColorHex) ? "#8c8c8c" : dto.ColorHex.Trim(),
+                Category = string.IsNullOrWhiteSpace(dto.Category) ? "General" : dto.Category.Trim(),
+                Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
                 IsSystemTag = dto.IsSystemTag,
-                IsActive = dto.IsActive,
+
+                // ✅ IMPORTANT: do not trust dto.IsActive during create (missing bool => false)
+                IsActive = true,
+
                 CreatedAt = DateTime.UtcNow,
                 LastUsedAt = null
             };
@@ -38,15 +73,15 @@ namespace xbytechat.api.Features.CRM.Services
             _db.Tags.Add(tag);
             await _db.SaveChangesAsync();
 
-            // ✅ After saving tag → try logging into Timeline (non-blocking)
+            // ✅ Non-blocking timeline log
             try
             {
                 await _timelineService.LogTagAppliedAsync(new CRMTimelineLogDto
                 {
-                    ContactId = Guid.Empty,    // ➡️ No specific contact, general event
+                    ContactId = Guid.Empty,
                     BusinessId = businessId,
                     EventType = "TagCreated",
-                    Description = $"🏷️ New tag created: {dto.Name}",
+                    Description = $"🏷️ New tag created: {tag.Name}",
                     ReferenceId = tag.Id,
                     CreatedBy = "System",
                     Timestamp = DateTime.UtcNow,
@@ -55,8 +90,7 @@ namespace xbytechat.api.Features.CRM.Services
             }
             catch (Exception ex)
             {
-                // 🛡 Fail-safe: Do not block tag creation if timeline fails
-                Console.WriteLine($"⚠️ Timeline log failed for TagId {tag.Id}: {ex.Message}");
+                _logger.LogWarning(ex, "⚠️ Timeline log failed for TagId {TagId}", tag.Id);
             }
 
             return new TagDto
@@ -98,11 +132,27 @@ namespace xbytechat.api.Features.CRM.Services
             var tag = await _db.Tags.FirstOrDefaultAsync(t => t.Id == tagId && t.BusinessId == businessId);
             if (tag == null) return false;
 
-            tag.Name = dto.Name;
-            tag.ColorHex = dto.ColorHex;
-            tag.Category = dto.Category;
-            tag.Notes = dto.Notes;
+            var name = (dto.Name ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(name))
+                throw new ArgumentException("Tag name is required.", nameof(dto.Name));
+
+            // ✅ Prevent rename collision (case-insensitive) inside business
+            var nameLower = name.ToLowerInvariant();
+
+            var collision = await _db.Tags
+                .Where(t => t.BusinessId == businessId && t.IsActive && t.Id != tagId)
+                .AnyAsync(t => (t.Name ?? "").ToLower() == nameLower);
+
+            if (collision)
+                throw new InvalidOperationException($"A tag with name '{name}' already exists.");
+
+            tag.Name = name;
+            tag.ColorHex = string.IsNullOrWhiteSpace(dto.ColorHex) ? tag.ColorHex : dto.ColorHex.Trim();
+            tag.Category = string.IsNullOrWhiteSpace(dto.Category) ? tag.Category : dto.Category.Trim();
+            tag.Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim();
             tag.IsSystemTag = dto.IsSystemTag;
+
+            // ✅ Allow activate/deactivate via update
             tag.IsActive = dto.IsActive;
             tag.LastUsedAt = DateTime.UtcNow;
 
@@ -115,122 +165,143 @@ namespace xbytechat.api.Features.CRM.Services
             var tag = await _db.Tags.FirstOrDefaultAsync(t => t.Id == tagId && t.BusinessId == businessId);
             if (tag == null) return false;
 
-            tag.IsActive = false;
+            tag.IsActive = false; // ✅ soft delete
             await _db.SaveChangesAsync();
             return true;
         }
-        //public async Task AssignTagAsync(Guid businessId, string phone, string tag)
-        //{
-        //    try
-        //    {
-        //        // ✅ Step 1: Lookup contact
-        //        var contact = await _db.Contacts
-        //            .FirstOrDefaultAsync(c => c.BusinessId == businessId && c.PhoneNumber == phone);
 
-        //        if (contact == null)
-        //        {
-        //            _logger.LogWarning("⚠️ Contact not found for phone: {Phone}", phone);
-        //            return;
-        //        }
-
-        //        // ✅ Step 2: Check if tag exists
-        //        var existingTag = await _db.Tags
-        //            .FirstOrDefaultAsync(t => t.BusinessId == businessId && t.Name == tag);
-
-        //        if (existingTag == null)
-        //        {
-        //            existingTag = new Tag
-        //            {
-        //                Id = Guid.NewGuid(),
-        //                BusinessId = businessId,
-        //                Name = tag,
-        //                CreatedAt = DateTime.UtcNow
-        //            };
-
-        //            await _db.Tags.AddAsync(existingTag);
-        //        }
-
-        //        // ✅ Step 3: Associate tag with contact if not already
-        //        var alreadyTagged = await _db.ContactTags
-        //            .AnyAsync(ct => ct.ContactId == contact.Id && ct.TagId == existingTag.Id);
-
-        //        if (!alreadyTagged)
-        //        {
-        //            await _db.ContactTags.AddAsync(new ContactTag
-        //            {
-        //                Id = Guid.NewGuid(),
-        //                ContactId = contact.Id,
-        //                TagId = existingTag.Id,
-        //                AssignedAt = DateTime.UtcNow
-        //            });
-
-        //            _logger.LogInformation("🏷 Tag '{Tag}' assigned to contact {ContactId}", tag, contact.Id);
-        //        }
-
-        //        await _db.SaveChangesAsync();
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        _logger.LogError(ex, "❌ Error assigning tag to contact.");
-        //        throw;
-        //    }
-        //}
-        public async Task AssignTagsAsync(Guid businessId, string phoneNumber, List<string> tagNames)
+        /// <summary>
+        /// Assigns tags (by name) to a contact located via phone number.
+        /// Canonical phone storage: E.164 digits-only (no '+').
+        /// </summary>
+        public async Task<bool> AssignTagsAsync(Guid businessId, string phoneNumber, List<string> tagNames)
         {
-            if (tagNames == null || !tagNames.Any())
-                return;
+            // ✅ Normalize phone first (digits-only)
+            var normalizedPhone = PhoneNumberNormalizer.NormalizeToE164Digits(phoneNumber, "IN");
+            if (string.IsNullOrWhiteSpace(normalizedPhone))
+            {
+                _logger.LogWarning("AssignTagsAsync: invalid phone. businessId={BusinessId}, rawPhone={Phone}", businessId, phoneNumber);
+                return false;
+            }
 
-            // 🔍 Fetch the contact and existing tag links
+            if (tagNames == null || tagNames.Count == 0)
+                return false;
+
+            // ✅ Clean tag list (trim + remove empties + distinct, case-insensitive)
+            var cleanedTagNames = tagNames
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .Select(t => t.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (cleanedTagNames.Count == 0)
+                return false;
+
+            // ✅ Find contact safely (tenant + active + not archived)
             var contact = await _db.Contacts
-             .Include(c => c.ContactTags)
-             .FirstOrDefaultAsync(c => c.BusinessId == businessId && c.PhoneNumber == phoneNumber);
+                .Include(c => c.ContactTags)
+                .FirstOrDefaultAsync(c =>
+                    c.BusinessId == businessId &&
+                    c.IsActive &&
+                    !c.IsArchived &&
+                    c.PhoneNumber == normalizedPhone);
 
+            if (contact == null)
+            {
+                _logger.LogWarning("AssignTagsAsync: contact not found. businessId={BusinessId}, phone={Phone}", businessId, normalizedPhone);
+                return false;
+            }
 
-            if (contact == null) return;
+            var existingTagIds = contact.ContactTags?.Select(ct => ct.TagId).ToHashSet() ?? new HashSet<Guid>();
 
-            var existingTagIds = contact.ContactTags.Select(t => t.TagId).ToHashSet();
-
-            // 🔍 Ensure tags exist or create them
-            var tags = await _db.Tags
-                .Where(t => t.BusinessId == businessId && tagNames.Contains(t.Name))
+            // ✅ Fetch existing tags (active). Case-insensitive mapping in-memory (safe across DB collations).
+            var existingTags = await _db.Tags
+                .Where(t => t.BusinessId == businessId && t.IsActive)
                 .ToListAsync();
 
-            var existingNames = tags.Select(t => t.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var missingNames = tagNames.Where(t => !existingNames.Contains(t)).Distinct().ToList();
+            var existingByName = existingTags
+                .GroupBy(t => t.Name ?? "", StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
-            foreach (var name in missingNames)
+            var tagsToLink = new List<Tag>();
+
+            foreach (var name in cleanedTagNames)
             {
+                if (existingByName.TryGetValue(name, out var tag))
+                {
+                    tagsToLink.Add(tag);
+                    continue;
+                }
+
+                // Create missing tag
                 var newTag = new Tag
                 {
                     Id = Guid.NewGuid(),
-                    Name = name,
                     BusinessId = businessId,
-                    CreatedAt = DateTime.UtcNow
+                    Name = name,
+                    ColorHex = "#8c8c8c",
+                    Category = "General",
+                    IsActive = true,
+                    CreatedAt = DateTime.UtcNow,
+                    LastUsedAt = DateTime.UtcNow
                 };
+
                 _db.Tags.Add(newTag);
-                tags.Add(newTag);
+                tagsToLink.Add(newTag);
+                existingByName[name] = newTag;
             }
 
-            await _db.SaveChangesAsync(); // Save new tags before linking
+            // Save new tags before linking
+            await _db.SaveChangesAsync();
 
-            // ✅ Link new tags to contact
-            foreach (var tag in tags)
+            contact.ContactTags ??= new List<ContactTag>();
+
+            var anyLinked = false;
+
+            foreach (var tag in tagsToLink)
             {
-                if (!existingTagIds.Contains(tag.Id))
+                if (existingTagIds.Contains(tag.Id))
+                    continue;
+
+                contact.ContactTags.Add(new ContactTag
                 {
-                    contact.ContactTags.Add(new ContactTag
-                    {
-                        Id = Guid.NewGuid(),
-                        TagId = tag.Id,
-                        ContactId = contact.Id,
-                        BusinessId = businessId,
-                        AssignedAt = DateTime.UtcNow,
-                        AssignedBy = "automation" // optional: set to flow name
-                    });
-                }
+                    Id = Guid.NewGuid(),
+                    BusinessId = businessId,
+                    ContactId = contact.Id,
+                    TagId = tag.Id,
+                    AssignedAt = DateTime.UtcNow,
+                    AssignedBy = "automation"
+                });
+
+                anyLinked = true;
             }
+
+            if (!anyLinked)
+                return true;
 
             await _db.SaveChangesAsync();
+
+            // ✅ Non-blocking timeline
+            try
+            {
+                await _timelineService.LogTagAppliedAsync(new CRMTimelineLogDto
+                {
+                    ContactId = contact.Id,
+                    BusinessId = businessId,
+                    EventType = "TagsAssigned",
+                    Description = $"🏷️ Tags assigned: {string.Join(", ", cleanedTagNames)}",
+                    ReferenceId = contact.Id,
+                    CreatedBy = "automation",
+                    Timestamp = DateTime.UtcNow,
+                    Category = "CRM"
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "⚠️ Timeline log failed for AssignTagsAsync. contactId={ContactId}", contact.Id);
+            }
+
+            return true;
         }
     }
 }

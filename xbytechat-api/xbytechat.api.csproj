@@ -27,6 +27,7 @@
     <PackageReference Include="EFCore.BulkExtensions" Version="8.1.3" />
     <PackageReference Include="FluentValidation" Version="11.11.0" />
     <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.0" />
+    <PackageReference Include="libphonenumber-csharp" Version="9.0.21" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.0" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.15" />
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.18" />
@@ -67,11 +68,9 @@
     <Folder Include="Features\Catalog\Repositories\" />
     <Folder Include="Features\CrmAnalytics\Models\" />
     <Folder Include="Features\CTAFlowBuilder\Mappers\" />
-    <Folder Include="Features\MessagesEngine\Helpers\" />
     <Folder Include="Features\PlanManagement\DTOs\" />
     <Folder Include="Features\CRM\Timelines\Repositories\" />
-    <Folder Include="Models\BusinessModel\" />
-    <Folder Include="Models\UsersModel\" />
+    <Folder Include="logs\" />
     <Folder Include="WhatsAppSettings\BackgroundService\" />
   </ItemGroup>
 

@@ -18,5 +18,8 @@ namespace xbytechat.api.Features.Inbox.DTOs
         public bool IsIncoming { get; set; }            // 🆕 Needed for bubble side
         public string Status { get; set; }              // 🆕 For message ticks
         public DateTime SentAt { get; set; }            // 🆕 For timestamp
+
+        // ✅ NEW: Provider/WAMID idempotency key (Meta "messages[0].id")
+        public string? ProviderMessageId { get; set; }
     }
 }

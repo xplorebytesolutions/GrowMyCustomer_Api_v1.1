@@ -7,14 +7,13 @@ namespace xbytechat.api.Features.CampaignModule.Services
 {
     public interface ICampaignRecipientService
     {
-        Task<CampaignRecipientDto> GetByIdAsync(Guid id);
-        Task<List<CampaignRecipientDto>> GetByCampaignIdAsync(Guid campaignId);
+        Task<CampaignRecipientDto?> GetByIdAsync(Guid businessId, Guid id);
+        Task<List<CampaignRecipientDto>> GetByCampaignIdAsync(Guid businessId, Guid campaignId);
 
-        Task<bool> UpdateStatusAsync(Guid recipientId, string newStatus);
-        Task<bool> TrackReplyAsync(Guid recipientId, string replyText);
-        Task<List<CampaignRecipientDto>> SearchRecipientsAsync(string status = null, string keyword = null);
+        Task<bool> UpdateStatusAsync(Guid businessId, Guid recipientId, string newStatus);
+        Task<bool> TrackReplyAsync(Guid businessId, Guid recipientId, string replyText);
+        Task<List<CampaignRecipientDto>> SearchRecipientsAsync(Guid businessId, string? status = null, string? keyword = null);
 
-        Task AssignContactsToCampaignAsync(Guid campaignId, List<Guid> contactIds);
+        Task AssignContactsToCampaignAsync(Guid businessId, Guid campaignId, List<Guid> contactIds);
     }
 }
-

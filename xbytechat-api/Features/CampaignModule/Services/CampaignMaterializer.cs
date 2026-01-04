@@ -22,6 +22,7 @@ namespace xbytechat.api.Features.CampaignModule.Services
     {
         private readonly AppDbContext _db;
         private readonly IVariableResolver _resolver;
+        private readonly ICampaignAudienceAttachmentService _audienceAttachments;
 
         // Common phone header candidates (case-insensitive)
         private static readonly string[] PhoneHeaderCandidates =
@@ -29,10 +30,11 @@ namespace xbytechat.api.Features.CampaignModule.Services
             "phone", "mobile", "whatsapp", "msisdn", "whatsapp_number", "contact", "contact_number"
         };
 
-        public CampaignMaterializer(AppDbContext db, IVariableResolver resolver)
+        public CampaignMaterializer(AppDbContext db, IVariableResolver resolver, ICampaignAudienceAttachmentService audienceAttachments)
         {
             _db = db;
             _resolver = resolver;
+            _audienceAttachments = audienceAttachments;
         }
        
         private static Dictionary<string, string> BuildAutoMappingsFromRow(
@@ -172,6 +174,7 @@ namespace xbytechat.api.Features.CampaignModule.Services
        Guid businessId,
        Guid campaignId,
        CampaignCsvMaterializeRequestDto request,
+       string actor,
        CancellationToken ct = default)
         {
             if (businessId == Guid.Empty) throw new UnauthorizedAccessException("Invalid business id.");
@@ -180,6 +183,8 @@ namespace xbytechat.api.Features.CampaignModule.Services
             if (request.CsvBatchId == Guid.Empty) throw new ArgumentException("CsvBatchId is required.");
             if (request.Persist && string.IsNullOrWhiteSpace(request.AudienceName))
                 throw new ArgumentException("AudienceName is required when Persist=true.");
+
+            actor = string.IsNullOrWhiteSpace(actor) ? "system" : actor;
 
             // Campaign ownership check
             var owns = await _db.Campaigns
@@ -194,7 +199,7 @@ namespace xbytechat.api.Features.CampaignModule.Services
                 .OrderBy(r => r.RowIndex);
 
             var totalRows = await rowsQuery.CountAsync(ct);
-            var csvRows = (request.Limit.HasValue && request.Limit.Value > 0)
+            var csvRows = (!request.Persist && request.Limit.HasValue && request.Limit.Value > 0)
                 ? await rowsQuery.Take(request.Limit.Value).ToListAsync(ct)
                 : await rowsQuery.ToListAsync(ct);
 
@@ -304,10 +309,10 @@ namespace xbytechat.api.Features.CampaignModule.Services
             // Persist if requested
             if (request.Persist && resp.MaterializedCount > 0)
             {
-                var audienceId = await PersistAudienceAndRecipientsAsync(
-                    businessId, campaignId, request.AudienceName!, preview, ct);
+                var replace = await _audienceAttachments.ReplaceFromMaterializationAsync(
+                    businessId, campaignId, request, preview, actor, ct);
 
-                resp.AudienceId = audienceId;
+                resp.AudienceId = replace.Active.AudienceId;
             }
 
             return resp;

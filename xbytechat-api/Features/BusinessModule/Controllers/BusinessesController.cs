@@ -163,7 +163,7 @@ namespace xbytechat.api.Features.BusinessModule.Controllers
         }
 
         [HttpGet("approved")]
-        [Authorize(Roles = "SuperAdmin")]
+        [Authorize(Roles = "superadmin,admin,partner,reseller")]
         public async Task<IActionResult> GetApprovedBusinesses()
         {
             var result = await _businessService.GetApprovedBusinessesAsync();

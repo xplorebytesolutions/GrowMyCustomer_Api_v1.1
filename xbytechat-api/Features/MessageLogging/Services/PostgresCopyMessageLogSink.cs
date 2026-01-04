@@ -123,27 +123,31 @@ public sealed class PostgresCopyMessageLogSink : BackgroundService, IMessageLogS
             await conn.OpenAsync(ct);
 
             // ✅ Align with table: both IsChargeable and IsIncoming are present (in this order)
+            // ✅ Added ContactId to COPY list (positional order matters)
+            // ✅ Also keep it close to BusinessId/CampaignId for clarity
             const string copySql = @"
-        COPY ""MessageLogs"" (
-            ""Id"",
-            ""BusinessId"",
-            ""CampaignId"",
-            ""RecipientNumber"",
-            ""MessageContent"",
-            ""MediaUrl"",
-            ""Status"",
-            ""MessageId"",
-            ""ErrorMessage"",
-            ""RawResponse"",
-            ""CreatedAt"",
-            ""SentAt"",
-            ""Source"",
-            ""RunId"",
-            ""Provider"",
-            ""ProviderMessageId"",
-            ""IsChargeable"",
-            ""IsIncoming""
-        ) FROM STDIN (FORMAT BINARY);";
+COPY ""MessageLogs"" (
+    ""Id"",
+    ""BusinessId"",
+    ""CampaignId"",
+    ""ContactId"",
+    ""RecipientNumber"",
+    ""MessageContent"",
+    ""MediaUrl"",
+    ""Status"",
+    ""MessageId"",
+    ""ErrorMessage"",
+    ""RawResponse"",
+    ""CreatedAt"",
+    ""SentAt"",
+    ""Source"",
+    ""RunId"",
+    ""Provider"",
+    ""ProviderMessageId"",
+    ""IsChargeable"",
+    ""IsIncoming""
+) FROM STDIN (FORMAT BINARY);";
+
 
             try
             {
@@ -153,12 +157,27 @@ public sealed class PostgresCopyMessageLogSink : BackgroundService, IMessageLogS
                 {
                     await importer.StartRowAsync(ct);
 
+                    //importer.Write(r.Id, NpgsqlDbType.Uuid);
+                    //importer.Write(r.BusinessId, NpgsqlDbType.Uuid);
+                    //importer.Write(r.CampaignId, NpgsqlDbType.Uuid);
+
+                    //if (string.IsNullOrWhiteSpace(r.RecipientNumber)) importer.WriteNull();
+                    //else importer.Write(r.RecipientNumber, NpgsqlDbType.Text);
                     importer.Write(r.Id, NpgsqlDbType.Uuid);
                     importer.Write(r.BusinessId, NpgsqlDbType.Uuid);
-                    importer.Write(r.CampaignId, NpgsqlDbType.Uuid);
+
+                    // ✅ CampaignId can be nullable in many systems; write safely
+                    if (r.CampaignId.HasValue) importer.Write(r.CampaignId.Value, NpgsqlDbType.Uuid);
+                    else importer.WriteNull();
+
+                    // ✅ NEW: ContactId (nullable) — must match COPY column order exactly
+                    if (r.ContactId.HasValue) importer.Write(r.ContactId.Value, NpgsqlDbType.Uuid);
+                    else importer.WriteNull();
 
                     if (string.IsNullOrWhiteSpace(r.RecipientNumber)) importer.WriteNull();
                     else importer.Write(r.RecipientNumber, NpgsqlDbType.Text);
+
+
 
                     if (string.IsNullOrWhiteSpace(r.MessageContent)) importer.WriteNull();
                     else importer.Write(r.MessageContent, NpgsqlDbType.Text);

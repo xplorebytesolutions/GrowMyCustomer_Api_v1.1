@@ -49,7 +49,7 @@ namespace xbytechat.api.Features.CampaignModule.Services
         // CampaignService.cs (fields)
 
 
-        private readonly ILogger<WhatsAppTemplateService> _logger;
+        private readonly ILogger<CampaignService> _logger;
         public CampaignService(AppDbContext context, IMessageService messageService,
                                IServiceProvider serviceProvider,
                                ILeadTimelineService timelineService,
@@ -57,7 +57,7 @@ namespace xbytechat.api.Features.CampaignModule.Services
                                IWhatsAppTemplateFetcherService templateFetcherService,
                                IUrlBuilderService urlBuilderService,
                                IWhatsAppSenderService whatsAppSenderService, IBillingIngestService billingIngest,
-                               ILogger<WhatsAppTemplateService> logger, IWhatsAppSettingsService whatsAppSettingsService
+                               ILogger<CampaignService> logger, IWhatsAppSettingsService whatsAppSettingsService
                                )
         {
             _context = context;
@@ -182,22 +182,22 @@ namespace xbytechat.api.Features.CampaignModule.Services
 
         #region Get All Types of Get and Update and Delete Methods
 
-        public async Task<List<CampaignSummaryDto>> GetAllCampaignsAsync(Guid businessId)
-        {
-            return await _context.Campaigns
-                .Where(c => c.BusinessId == businessId)
-                .OrderByDescending(c => c.CreatedAt)
-                .Select(c => new CampaignSummaryDto
-                {
-                    Id = c.Id,
-                    Name = c.Name,
-                    Status = c.Status,
-                    ScheduledAt = c.ScheduledAt,
-                    CreatedAt = c.CreatedAt,
+        //public async Task<List<CampaignSummaryDto>> GetAllCampaignsAsync(Guid businessId)
+        //{
+        //    return await _context.Campaigns
+        //        .Where(c => c.BusinessId == businessId)
+        //        .OrderByDescending(c => c.CreatedAt)
+        //        .Select(c => new CampaignSummaryDto
+        //        {
+        //            Id = c.Id,
+        //            Name = c.Name,
+        //            Status = c.Status,
+        //            ScheduledAt = c.ScheduledAt,
+        //            CreatedAt = c.CreatedAt,
 
-                })
-                .ToListAsync();
-        }
+        //        })
+        //        .ToListAsync();
+        //}
         public async Task<CampaignDto?> GetCampaignByIdAsync(Guid campaignId, Guid businessId)
         {
             var campaign = await _context.Campaigns
@@ -264,7 +264,16 @@ namespace xbytechat.api.Features.CampaignModule.Services
                     ImageUrl = c.ImageUrl,            // ✅ Now mapped
                     ImageCaption = c.ImageCaption,    // ✅ Now mapped
                     CtaTitle = c.Cta != null ? c.Cta.Title : null,  // optional
-                    RecipientCount = c.Recipients.Count()
+                    RecipientCount = c.Recipients.Count(),
+                    SentAt = c.Status == "Sent" || c.Status == "Completed" ? c.UpdatedAt : null, // ✅ Map SentAt
+                    MessageTemplate = c.MessageTemplate, // ✅ Map for preview
+                    MultiButtons = c.MultiButtons.Select(b => new CampaignButtonDto 
+                    {
+                        ButtonText = b.Title,
+                        ButtonType = b.Type, 
+                        Value = b.Value, 
+                        Position = b.Position 
+                    }).ToList()
                 })
                 .ToListAsync();
         }
@@ -305,7 +314,16 @@ namespace xbytechat.api.Features.CampaignModule.Services
                     Name = c.Name,
                     Status = c.Status,
                     ScheduledAt = c.ScheduledAt,
-                    CreatedAt = c.CreatedAt
+                    CreatedAt = c.CreatedAt,
+                    SentAt = c.Status == "Sent" || c.Status == "Completed" ? c.UpdatedAt : null, // ✅ Map SentAt
+                    MessageTemplate = c.MessageTemplate, // ✅ Map for preview
+                    MultiButtons = c.MultiButtons.Select(b => new CampaignButtonDto 
+                    {
+                        ButtonText = b.Title,
+                        ButtonType = b.Type, 
+                        Value = b.Value, 
+                        Position = b.Position 
+                    }).ToList()
                 })
                 .ToListAsync();
 
@@ -475,319 +493,32 @@ namespace xbytechat.api.Features.CampaignModule.Services
 
         #region // 🆕 CreateCampaignAsync(Text/Image)
 
-        //public async Task<Guid?> CreateTextCampaignAsync(CampaignCreateDto dto, Guid businessId, string createdBy)
-        //{
-        //    try
-        //    {
-        //        // === NEW: duplicate-name guard (per Business) ===
-        //        // If you have soft-delete or archived states, add those filters here.
-        //        var nameExists = await _context.Campaigns
-        //            .AsNoTracking()
-        //            .AnyAsync(c => c.BusinessId == businessId && c.Name == dto.Name);
 
-        //        if (nameExists)
-        //            throw new InvalidOperationException("A campaign with this name already exists for this business. Please choose a different name.");
-
-        //        var campaignId = Guid.NewGuid();
-
-        //        // 🔁 Parse/normalize template parameters once
-        //        var parsedParams = TemplateParameterHelper.ParseTemplateParams(
-        //            JsonConvert.SerializeObject(dto.TemplateParameters ?? new List<string>())
-        //        );
-
-        //        // 🔒 Validate + resolve sender (optional but recommended)
-        //        string? providerNorm = null;
-        //        if (!string.IsNullOrWhiteSpace(dto.PhoneNumberId))
-        //        {
-        //            var pair = await _whisatsAppSenderService.ResolveSenderPairAsync(businessId, dto.PhoneNumberId);
-        //            if (pair == null)
-        //                throw new InvalidOperationException("❌ Selected sender is invalid or does not belong to this business.");
-        //            providerNorm = pair.Value.Provider; // already normalized to UPPER
-        //        }
-
-        //        // 🔄 Flow id from UI (null/empty => no flow)
-        //        Guid? incomingFlowId = (dto.CTAFlowConfigId.HasValue && dto.CTAFlowConfigId.Value != Guid.Empty)
-        //            ? dto.CTAFlowConfigId.Value
-        //            : (Guid?)null;
-
-        //        Guid? savedFlowId = incomingFlowId;
-
-        //        // 🧩 FLOW VALIDATION (only to align the starting template)
-        //        string selectedTemplateName = dto.TemplateId ?? dto.MessageTemplate ?? string.Empty;
-
-        //        CTAFlowConfig? flow = null;
-        //        CTAFlowStep? entryStep = null;
-
-        //        if (incomingFlowId.HasValue)
-        //        {
-        //            flow = await _context.CTAFlowConfigs
-        //                .Include(f => f.Steps).ThenInclude(s => s.ButtonLinks)
-        //                .FirstOrDefaultAsync(f =>
-        //                    f.Id == incomingFlowId.Value &&
-        //                    f.BusinessId == businessId &&
-        //                    f.IsActive);
-
-        //            if (flow != null)
-        //            {
-        //                var allIncoming = new HashSet<Guid>(flow.Steps
-        //                    .SelectMany(s => s.ButtonLinks)
-        //                    .Where(l => l.NextStepId.HasValue)
-        //                    .Select(l => l.NextStepId!.Value));
-
-        //                entryStep = flow.Steps
-        //                    .OrderBy(s => s.StepOrder)
-        //                    .FirstOrDefault(s => !allIncoming.Contains(s.Id));
-
-        //                if (entryStep != null &&
-        //                    !string.Equals(selectedTemplateName, entryStep.TemplateToSend, StringComparison.OrdinalIgnoreCase))
-        //                {
-        //                    selectedTemplateName = entryStep.TemplateToSend;
-        //                }
-        //            }
-        //        }
-
-        //        //var template = await _templateFetcherService.GetTemplateByNameAsync(
-        //        //    businessId,
-        //        //    selectedTemplateName,
-        //        //    includeButtons: true
-        //        //);
-
-        //        //var templateBody = template?.Body ?? dto.MessageTemplate ?? string.Empty;
-
-        //        var template = await _templateFetcherService.GetTemplateByNameAsync(
-        //            businessId,
-        //            selectedTemplateName,
-        //            includeButtons: true
-        //        );
-        //        if (template == null)
-        //            throw new InvalidOperationException($"Template '{selectedTemplateName}' not found from provider.");
-
-        //        var templateBody = template.Body ?? string.Empty;
-
-
-        //        var resolvedBody = TemplateParameterHelper.FillPlaceholders(templateBody, parsedParams);
-
-        //        // =========================
-        //        // 🆕 Header kind + URL logic
-        //        // =========================
-        //        string headerKind = (dto.HeaderKind ?? "").Trim().ToLowerInvariant(); // "image" | "video" | "document" | "text" | "none"
-        //        bool isMediaHeader = headerKind == "image" || headerKind == "video" || headerKind == "document";
-
-        //        // Prefer new unified HeaderMediaUrl; fall back to ImageUrl for legacy image campaigns
-        //        string? headerUrl = string.IsNullOrWhiteSpace(dto.HeaderMediaUrl)
-        //            ? (headerKind == "image" ? dto.ImageUrl : null)
-        //            : dto.HeaderMediaUrl;
-
-        //        // ✅ Campaign type: headerKind ALWAYS wins (FE may still send "text")
-        //        string finalCampaignType = isMediaHeader
-        //            ? headerKind                               // "image" | "video" | "document"
-        //            : (dto.CampaignType ?? "text").Trim().ToLowerInvariant();
-
-        //        // clamp to known values
-        //        if (finalCampaignType != "image" &&
-        //            finalCampaignType != "video" &&
-        //            finalCampaignType != "document")
-        //        {
-        //            finalCampaignType = "text";
-        //        }
-
-        //        // Validate media header needs URL
-        //        if (isMediaHeader && string.IsNullOrWhiteSpace(headerUrl))
-        //            throw new InvalidOperationException("❌ Header media URL is required for this template.");
-
-        //        // =========================================
-        //        // Create entity with correct media fields set
-        //        // =========================================
-        //        var campaign = new Campaign
-        //        {
-        //            Id = campaignId,
-        //            BusinessId = businessId,
-        //            Name = dto.Name,
-
-        //            MessageTemplate = dto.MessageTemplate,
-        //            TemplateId = selectedTemplateName,
-
-        //            FollowUpTemplateId = dto.FollowUpTemplateId,
-        //            CampaignType = finalCampaignType,
-        //            CtaId = dto.CtaId,
-        //            CTAFlowConfigId = savedFlowId,
-
-        //            ScheduledAt = dto.ScheduledAt, // FE should send UTC ISO
-        //            CreatedBy = createdBy,
-        //            CreatedAt = DateTime.UtcNow,
-        //            UpdatedAt = DateTime.UtcNow,
-
-        //            // Default status will be finalized below after we reason about ScheduledAt
-        //            Status = "Draft",
-
-        //            // Media fields (set exactly one depending on header kind)
-        //            ImageUrl = headerKind == "image" ? headerUrl : null,
-        //            ImageCaption = dto.ImageCaption,
-        //            VideoUrl = headerKind == "video" ? headerUrl : null,
-        //            DocumentUrl = headerKind == "document" ? headerUrl : null,
-
-        //            TemplateParameters = JsonConvert.SerializeObject(dto.TemplateParameters ?? new List<string>()),
-        //            MessageBody = resolvedBody,
-
-        //            // 🟢 Persist sender choice (nullable if not selected)
-        //            Provider = providerNorm,
-        //            PhoneNumberId = dto.PhoneNumberId
-        //        };
-
-        //        // 🔒 Step 2.1: Snapshot template schema (text path)
-        //        try
-        //        {
-        //            var snapshotMeta = await _templateFetcherService.GetTemplateMetaAsync(
-        //                businessId,
-        //                selectedTemplateName,
-        //                language: null,
-        //                provider: providerNorm?.ToLowerInvariant() // normalize to match DB ("meta_cloud"/"pinnacle")
-        //            );
-
-        //            campaign.TemplateSchemaSnapshot = snapshotMeta != null
-        //                ? JsonConvert.SerializeObject(snapshotMeta)
-        //                : JsonConvert.SerializeObject(new
-        //                {
-        //                    Provider = providerNorm ?? "",
-        //                    TemplateName = selectedTemplateName,
-        //                    Language = template?.Language ?? ""
-        //                });
-        //        }
-        //        catch (Exception ex)
-        //        {
-        //            Log.Warning(ex, "⚠️ Template schema snapshot failed for campaign {CampaignId}", campaignId);
-        //        }
-
-        //        await _context.Campaigns.AddAsync(campaign);
-
-        //        if (dto.ContactIds != null && dto.ContactIds.Any())
-        //        {
-        //            var recipients = dto.ContactIds.Select(contactId => new CampaignRecipient
-        //            {
-        //                Id = Guid.NewGuid(),
-        //                CampaignId = campaignId,
-        //                ContactId = contactId,
-        //                BusinessId = businessId,
-        //                Status = "Pending",
-        //                SentAt = null,
-        //                UpdatedAt = DateTime.UtcNow
-        //            });
-
-        //            await _context.CampaignRecipients.AddRangeAsync(recipients);
-        //        }
-
-        //        if (dto.MultiButtons != null && dto.MultiButtons.Any())
-        //        {
-        //            var buttons = dto.MultiButtons
-        //                .Where(btn => !string.IsNullOrWhiteSpace(btn.ButtonText) && !string.IsNullOrWhiteSpace(btn.TargetUrl))
-        //                .Take(3)
-        //                .Select((btn, index) => new CampaignButton
-        //                {
-        //                    Id = Guid.NewGuid(),
-        //                    CampaignId = campaignId,
-        //                    Title = btn.ButtonText,
-        //                    Type = btn.ButtonType ?? "url",
-        //                    Value = btn.TargetUrl,
-        //                    Position = index + 1,
-        //                    IsFromTemplate = false
-        //                });
-
-        //            await _context.CampaignButtons.AddRangeAsync(buttons);
-        //        }
-
-        //        if (template != null && template.ButtonParams?.Count > 0)
-        //        {
-        //            var buttonsToSave = new List<CampaignButton>();
-        //            var userButtons = dto.ButtonParams ?? new List<CampaignButtonParamFromMetaDto>();
-
-        //            var total = Math.Min(3, template.ButtonParams.Count);
-        //            for (int i = 0; i < total; i++)
-        //            {
-        //                var tplBtn = template.ButtonParams[i];
-        //                var isDynamic = (tplBtn.ParameterValue?.Contains("{{1}}") ?? false);
-
-        //                var userBtn = userButtons.FirstOrDefault(b => b.Position == i + 1);
-        //                var valueToSave = (isDynamic && userBtn != null)
-        //                    ? userBtn.Value?.Trim()
-        //                    : tplBtn.ParameterValue;
-
-        //                buttonsToSave.Add(new CampaignButton
-        //                {
-        //                    Id = Guid.NewGuid(),
-        //                    CampaignId = campaignId,
-        //                    Title = tplBtn.Text,
-        //                    Type = tplBtn.Type,
-        //                    Value = valueToSave,
-        //                    Position = i + 1,
-        //                    IsFromTemplate = true
-        //                });
-        //            }
-
-        //            await _context.CampaignButtons.AddRangeAsync(buttonsToSave);
-        //        }
-
-        //        // === NEW: schedule-aware status + enqueue job ===
-        //        // If ScheduledAt is in the future → mark as "Queued"/"Scheduled" and enqueue a job due at ScheduledAt.
-        //        // Else keep as "Draft" (user can send manually).
-        //        var nowUtc = DateTime.UtcNow;
-        //        if (campaign.ScheduledAt.HasValue && campaign.ScheduledAt.Value > nowUtc)
-        //        {
-        //            campaign.Status = "Queued"; // name it "Scheduled" if you have that enumeration in UI
-        //            campaign.UpdatedAt = nowUtc;
-
-        //            // One campaign → one active queued job. Since this is a fresh campaign, no job yet.
-        //            var job = new OutboundCampaignJob
-        //            {
-        //                Id = Guid.NewGuid(),
-        //                BusinessId = businessId,
-        //                CampaignId = campaign.Id,
-        //                Status = "queued",
-        //                Attempt = 0,
-        //                MaxAttempts = 5,
-        //                // CRITICAL: use UTC moment from ScheduledAt
-        //                NextAttemptAt = campaign.ScheduledAt.Value
-        //            };
-        //            await _context.OutboundCampaignJobs.AddAsync(job);
-        //        }
-        //        else
-        //        {
-        //            // Draft by default; user can trigger "Send now" elsewhere
-        //            campaign.Status = "Draft";
-        //        }
-
-        //        await _context.SaveChangesAsync();
-
-        //        Log.Information("✅ Campaign '{Name}' created | Type:{Type} | Header:{HeaderKind} | FlowId:{Flow} | EntryTemplate:{Entry} | Sender:{Provider}/{PhoneId} | Recipients:{Contacts} | ScheduledAt:{ScheduledAt} | Status:{Status}",
-        //            dto.Name, finalCampaignType, headerKind,
-        //            savedFlowId,
-        //            entryStep?.TemplateToSend ?? selectedTemplateName,
-        //            providerNorm,
-        //            dto.PhoneNumberId,
-        //            dto.ContactIds?.Count ?? 0,
-        //            campaign.ScheduledAt,
-        //            campaign.Status);
-
-        //        return campaignId;
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        // If you want the FE to show the exact message (like duplicate-name),
-        //        // make sure your controller surfaces ex.Message in the response body.
-        //        Log.Error(ex, "❌ Failed to create campaign");
-        //        return null;
-        //    }
-        //}
+      
         public async Task<Guid?> CreateTextCampaignAsync(CampaignCreateDto dto, Guid businessId, string createdBy)
         {
+            // ✅ Normalize campaign name once (trim + case-insensitive key)
+            var normalizedName = (dto?.Name ?? string.Empty).Trim();
+            var nameKey = normalizedName.ToLowerInvariant();
+
+            // ✅ Duplicate-name guard (per business)
+            var nameExists = await _context.Campaigns
+                .AsNoTracking()
+                .AnyAsync(c =>
+                    c.BusinessId == businessId &&
+                    c.Name != null &&
+                    c.Name.ToLower() == nameKey
+                // && !c.IsDeleted   // 🔁 Enable if Campaign supports soft delete
+                );
+
+            if (nameExists)
+                throw new InvalidOperationException("A campaign with this name already exists for this business. Please choose a different name.");
+
+            // ✅ Transaction: campaign + recipients + buttons + (maybe) job must be atomic
+            await using var tx = await _context.Database.BeginTransactionAsync();
+
             try
             {
-                // === duplicate-name guard (per Business) ===
-                var nameExists = await _context.Campaigns
-                    .AsNoTracking()
-                    .AnyAsync(c => c.BusinessId == businessId && c.Name == dto.Name);
-                if (nameExists)
-                    throw new InvalidOperationException("A campaign with this name already exists for this business. Please choose a different name.");
-
                 var campaignId = Guid.NewGuid();
 
                 // Parse template parameters once
@@ -846,7 +577,7 @@ namespace xbytechat.api.Features.CampaignModule.Services
                     }
                 }
 
-                // === Fetch template strictly from DB (includes header kind + combined body if TEXT header) ===
+                // Fetch template strictly from DB
                 var template = await _templateFetcherService.GetTemplateByNameAsync(
                     businessId,
                     selectedTemplateName,
@@ -855,17 +586,12 @@ namespace xbytechat.api.Features.CampaignModule.Services
                 if (template == null)
                     throw new InvalidOperationException($"Template '{selectedTemplateName}' not found.");
 
-                // Use template's combined body (TEXT header + body) so placeholders in header are also filled
                 var templateBody = template.Body ?? string.Empty;
                 var resolvedBody = TemplateParameterHelper.FillPlaceholders(templateBody, parsedParams);
 
-                // =========================
                 // Header kind + URL logic
-                // =========================
-                // Trust the template’s header kind; fall back to FE only if template says "none"
                 var headerKind = (template.HeaderKind ?? dto.HeaderKind ?? "none").Trim().ToLowerInvariant();
 
-                // If FE sent a conflicting kind, fail early (helps catch wrong selections)
                 if (!string.IsNullOrWhiteSpace(dto.HeaderKind) &&
                     !string.Equals(headerKind, dto.HeaderKind.Trim().ToLowerInvariant(), StringComparison.Ordinal))
                 {
@@ -874,31 +600,27 @@ namespace xbytechat.api.Features.CampaignModule.Services
 
                 bool isMediaHeader = headerKind is "image" or "video" or "document";
 
-                // Prefer unified HeaderMediaUrl; legacy ImageUrl still supported for "image"
                 string? headerUrl = string.IsNullOrWhiteSpace(dto.HeaderMediaUrl)
                     ? (headerKind == "image" ? dto.ImageUrl : null)
                     : dto.HeaderMediaUrl;
 
-                // For media headers, URL is mandatory
                 if (isMediaHeader && string.IsNullOrWhiteSpace(headerUrl))
                     throw new InvalidOperationException("❌ Header media URL is required for this template.");
 
-                // Campaign type: headerKind drives media campaigns; otherwise use FE value (default text)
                 string finalCampaignType = isMediaHeader
-                    ? headerKind                                   // "image" | "video" | "document"
+                    ? headerKind
                     : (dto.CampaignType ?? "text").Trim().ToLowerInvariant();
 
                 if (finalCampaignType is not ("image" or "video" or "document"))
                     finalCampaignType = "text";
 
-                // =========================================
-                // Create entity with correct media fields set
-                // =========================================
                 var campaign = new Campaign
                 {
                     Id = campaignId,
                     BusinessId = businessId,
-                    Name = dto.Name,
+
+                    // ✅ store trimmed name
+                    Name = normalizedName,
 
                     MessageTemplate = dto.MessageTemplate,
                     TemplateId = selectedTemplateName,
@@ -908,14 +630,13 @@ namespace xbytechat.api.Features.CampaignModule.Services
                     CtaId = dto.CtaId,
                     CTAFlowConfigId = savedFlowId,
 
-                    ScheduledAt = dto.ScheduledAt, // FE should send UTC ISO
+                    ScheduledAt = dto.ScheduledAt,
                     CreatedBy = createdBy,
                     CreatedAt = DateTime.UtcNow,
                     UpdatedAt = DateTime.UtcNow,
 
                     Status = "Draft",
 
-                    // Media fields (set exactly one depending on header kind)
                     ImageUrl = headerKind == "image" ? headerUrl : null,
                     ImageCaption = dto.ImageCaption,
                     VideoUrl = headerKind == "video" ? headerUrl : null,
@@ -928,7 +649,7 @@ namespace xbytechat.api.Features.CampaignModule.Services
                     PhoneNumberId = dto.PhoneNumberId
                 };
 
-                // Snapshot template schema (from DB meta)
+                // Snapshot template schema
                 try
                 {
                     var snapshotMeta = await _templateFetcherService.GetTemplateMetaAsync(
@@ -957,7 +678,10 @@ namespace xbytechat.api.Features.CampaignModule.Services
                 // Recipients
                 if (dto.ContactIds != null && dto.ContactIds.Any())
                 {
-                    var recipients = dto.ContactIds.Select(contactId => new CampaignRecipient
+                    // ✅ Optional: dedupe contactIds to avoid duplicate recipient rows
+                    var uniqueContactIds = dto.ContactIds.Distinct().ToList();
+
+                    var recipients = uniqueContactIds.Select(contactId => new CampaignRecipient
                     {
                         Id = Guid.NewGuid(),
                         CampaignId = campaignId,
@@ -967,6 +691,7 @@ namespace xbytechat.api.Features.CampaignModule.Services
                         SentAt = null,
                         UpdatedAt = DateTime.UtcNow
                     });
+
                     await _context.CampaignRecipients.AddRangeAsync(recipients);
                 }
 
@@ -990,7 +715,7 @@ namespace xbytechat.api.Features.CampaignModule.Services
                     await _context.CampaignButtons.AddRangeAsync(buttons);
                 }
 
-                // Buttons coming from the template (DB metadata)
+                // Buttons from template meta
                 if (template.ButtonParams?.Count > 0)
                 {
                     var buttonsToSave = new List<CampaignButton>();
@@ -1047,9 +772,10 @@ namespace xbytechat.api.Features.CampaignModule.Services
                 }
 
                 await _context.SaveChangesAsync();
+                await tx.CommitAsync();
 
                 Log.Information("✅ Campaign '{Name}' created | Type:{Type} | Header:{HeaderKind} | FlowId:{Flow} | EntryTemplate:{Entry} | Sender:{Provider}/{PhoneId} | Recipients:{Contacts} | ScheduledAt:{ScheduledAt} | Status:{Status}",
-                    dto.Name, finalCampaignType, headerKind,
+                    normalizedName, finalCampaignType, headerKind,
                     savedFlowId,
                     entryStep?.TemplateToSend ?? selectedTemplateName,
                     providerNorm,
@@ -1062,235 +788,274 @@ namespace xbytechat.api.Features.CampaignModule.Services
             }
             catch (Exception ex)
             {
+                await tx.RollbackAsync();
                 Log.Error(ex, "❌ Failed to create campaign");
                 return null;
             }
         }
 
+      
         public async Task<Guid> CreateImageCampaignAsync(Guid businessId, CampaignCreateDto dto, string createdBy)
         {
+            // ✅ Normalize campaign name once (trim + case-insensitive key)
+            var normalizedName = (dto?.Name ?? string.Empty).Trim();
+            var nameKey = normalizedName.ToLowerInvariant();
+
+            // ✅ Duplicate-name guard (per business)
+            var nameExists = await _context.Campaigns
+                .AsNoTracking()
+                .AnyAsync(c =>
+                    c.BusinessId == businessId &&
+                    c.Name != null &&
+                    c.Name.ToLower() == nameKey
+                // && !c.IsDeleted   // 🔁 Enable if Campaign supports soft delete
+                );
+
+            if (nameExists)
+                throw new InvalidOperationException("A campaign with this name already exists for this business. Please choose a different name.");
+
             var campaignId = Guid.NewGuid();
 
-            // 🔁 Parse/normalize template parameters once
-            var parsedParams = TemplateParameterHelper.ParseTemplateParams(
-                JsonConvert.SerializeObject(dto.TemplateParameters ?? new List<string>())
-            );
+            // ✅ Transaction: campaign + recipients + buttons must be atomic
+            await using var tx = await _context.Database.BeginTransactionAsync();
 
-            // 🔄 Flow id from UI (null/empty => no flow). We will persist this as-is.
-            Guid? incomingFlowId = (dto.CTAFlowConfigId.HasValue && dto.CTAFlowConfigId.Value != Guid.Empty)
-                ? dto.CTAFlowConfigId.Value
-                : (Guid?)null;
-
-            // We will save this value regardless of validation outcome
-            Guid? savedFlowId = incomingFlowId;
-
-            // ============================================================
-            // 🧩 FLOW VALIDATION (only to align the starting template)
-            // ============================================================
-            string selectedTemplateName = dto.TemplateId ?? dto.MessageTemplate ?? string.Empty;
-
-            CTAFlowConfig? flow = null;
-            CTAFlowStep? entryStep = null;
-
-            if (incomingFlowId.HasValue)
+            try
             {
-                // load flow with steps+links and verify ownership
-                flow = await _context.CTAFlowConfigs
-                    .Include(f => f.Steps).ThenInclude(s => s.ButtonLinks)
-                    .FirstOrDefaultAsync(f =>
-                        f.Id == incomingFlowId.Value &&
-                        f.BusinessId == businessId &&
-                        f.IsActive);
+                // 🔁 Parse/normalize template parameters once
+                var parsedParams = TemplateParameterHelper.ParseTemplateParams(
+                    JsonConvert.SerializeObject(dto.TemplateParameters ?? new List<string>())
+                );
 
-                if (flow == null)
+                // 🔄 Flow id from UI (null/empty => no flow). We will persist this as-is.
+                Guid? incomingFlowId = (dto.CTAFlowConfigId.HasValue && dto.CTAFlowConfigId.Value != Guid.Empty)
+                    ? dto.CTAFlowConfigId.Value
+                    : (Guid?)null;
+
+                // We will save this value regardless of validation outcome
+                Guid? savedFlowId = incomingFlowId;
+
+                // ============================================================
+                // 🧩 FLOW VALIDATION (only to align the starting template)
+                // ============================================================
+                string selectedTemplateName = dto.TemplateId ?? dto.MessageTemplate ?? string.Empty;
+
+                CTAFlowConfig? flow = null;
+                CTAFlowStep? entryStep = null;
+
+                if (incomingFlowId.HasValue)
                 {
-                    Log.Warning("❌ Flow {FlowId} not found/active for business {Biz}. Will persist FlowId but not align template.",
-                        incomingFlowId, businessId);
+                    // load flow with steps+links and verify ownership
+                    flow = await _context.CTAFlowConfigs
+                        .Include(f => f.Steps).ThenInclude(s => s.ButtonLinks)
+                        .FirstOrDefaultAsync(f =>
+                            f.Id == incomingFlowId.Value &&
+                            f.BusinessId == businessId &&
+                            f.IsActive);
+
+                    if (flow == null)
+                    {
+                        Log.Warning("❌ Flow {FlowId} not found/active for business {Biz}. Will persist FlowId but not align template.",
+                            incomingFlowId, businessId);
+                    }
+                    else
+                    {
+                        // compute entry step: step with NO incoming links
+                        var allIncoming = new HashSet<Guid>(flow.Steps
+                            .SelectMany(s => s.ButtonLinks)
+                            .Where(l => l.NextStepId.HasValue)
+                            .Select(l => l.NextStepId!.Value));
+
+                        entryStep = flow.Steps
+                            .OrderBy(s => s.StepOrder)
+                            .FirstOrDefault(s => !allIncoming.Contains(s.Id));
+
+                        if (entryStep == null)
+                        {
+                            Log.Warning("❌ Flow {FlowId} has no entry step. Persisting FlowId but not aligning template.", flow.Id);
+                        }
+                        else if (!string.Equals(selectedTemplateName, entryStep.TemplateToSend, StringComparison.OrdinalIgnoreCase))
+                        {
+                            Log.Information("ℹ️ Aligning selected template '{Sel}' to flow entry '{Entry}'.",
+                                selectedTemplateName, entryStep.TemplateToSend);
+                            selectedTemplateName = entryStep.TemplateToSend;
+                        }
+                    }
                 }
                 else
                 {
-                    // compute entry step: step with NO incoming links
-                    var allIncoming = new HashSet<Guid>(flow.Steps
-                        .SelectMany(s => s.ButtonLinks)
-                        .Where(l => l.NextStepId.HasValue)
-                        .Select(l => l.NextStepId!.Value));
-
-                    entryStep = flow.Steps
-                        .OrderBy(s => s.StepOrder)
-                        .FirstOrDefault(s => !allIncoming.Contains(s.Id));
-
-                    if (entryStep == null)
-                    {
-                        Log.Warning("❌ Flow {FlowId} has no entry step. Persisting FlowId but not aligning template.", flow.Id);
-                    }
-                    else if (!string.Equals(selectedTemplateName, entryStep.TemplateToSend, StringComparison.OrdinalIgnoreCase))
-                    {
-                        Log.Information("ℹ️ Aligning selected template '{Sel}' to flow entry '{Entry}'.",
-                            selectedTemplateName, entryStep.TemplateToSend);
-                        selectedTemplateName = entryStep.TemplateToSend;
-                    }
+                    Log.Information("ℹ️ No flow attached to image campaign '{Name}'. Proceeding as plain template campaign.", normalizedName);
                 }
-            }
-            else
-            {
-                Log.Information("ℹ️ No flow attached to image campaign '{Name}'. Proceeding as plain template campaign.", dto.Name);
-            }
 
-            // 🧠 Fetch template (for body + buttons) using the aligned/selected template name
-            var template = await _templateFetcherService.GetTemplateByNameAsync(
-                businessId,
-                selectedTemplateName,
-                includeButtons: true
-            );
-
-            // 🧠 Resolve message body using template body (if available) else dto.MessageTemplate
-            var templateBody = template?.Body ?? dto.MessageTemplate ?? string.Empty;
-            var resolvedBody = TemplateParameterHelper.FillPlaceholders(templateBody, parsedParams);
-
-            // 🎯 Step 1: Create campaign (CTAFlowConfigId now always = savedFlowId)
-            var campaign = new Campaign
-            {
-                Id = campaignId,
-                BusinessId = businessId,
-                Name = dto.Name,
-
-                // store the (possibly aligned) template name
-                MessageTemplate = dto.MessageTemplate,      // keep original text for UI if you use it
-                TemplateId = selectedTemplateName,          // ensure start template matches flow entry when available
-
-                FollowUpTemplateId = dto.FollowUpTemplateId,
-                CampaignType = "image",
-                CtaId = dto.CtaId,
-                CTAFlowConfigId = savedFlowId,              // 👈 persist what UI sent (or null if no flow)
-
-                ScheduledAt = dto.ScheduledAt,
-                CreatedBy = createdBy,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
-                Status = "Draft",
-
-                // image-specific fields
-                ImageUrl = dto.ImageUrl,
-                ImageCaption = dto.ImageCaption,
-
-                // params/body snapshot (useful for previews & auditing)
-                TemplateParameters = JsonConvert.SerializeObject(dto.TemplateParameters ?? new List<string>()),
-                MessageBody = resolvedBody
-            };
-            // 🔒 Step 2.1: Snapshot template schema (image path)
-            try
-            {
-                var snapshotMeta = await _templateFetcherService.GetTemplateMetaAsync(
+                // 🧠 Fetch template (for body + buttons) using the aligned/selected template name
+                var template = await _templateFetcherService.GetTemplateByNameAsync(
                     businessId,
                     selectedTemplateName,
-                    language: null,
-                    provider: null
+                    includeButtons: true
                 );
 
-                campaign.TemplateSchemaSnapshot = snapshotMeta != null
-                    ? JsonConvert.SerializeObject(snapshotMeta)
-                    : JsonConvert.SerializeObject(new
-                    {
-                        Provider = "",
-                        TemplateName = selectedTemplateName,
-                        Language = template?.Language ?? ""
-                    });
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "⚠️ Template schema snapshot failed for (image) campaign {CampaignId}", campaignId);
-            }
+                // 🧠 Resolve message body using template body (if available) else dto.MessageTemplate
+                var templateBody = template?.Body ?? dto.MessageTemplate ?? string.Empty;
+                var resolvedBody = TemplateParameterHelper.FillPlaceholders(templateBody, parsedParams);
 
-            await _context.Campaigns.AddAsync(campaign);
-
-            // ✅ Step 2: Assign contacts (leave SentAt null until send)
-            if (dto.ContactIds != null && dto.ContactIds.Any())
-            {
-                var recipients = dto.ContactIds.Select(contactId => new CampaignRecipient
+                // 🎯 Step 1: Create campaign (CTAFlowConfigId now always = savedFlowId)
+                var campaign = new Campaign
                 {
-                    Id = Guid.NewGuid(),
-                    CampaignId = campaignId,
-                    ContactId = contactId,
+                    Id = campaignId,
                     BusinessId = businessId,
-                    Status = "Pending",
-                    SentAt = null,
-                    UpdatedAt = DateTime.UtcNow
-                });
 
-                await _context.CampaignRecipients.AddRangeAsync(recipients);
-            }
+                    // ✅ store trimmed name
+                    Name = normalizedName,
 
-            // ✅ Step 3a: Save manual buttons from frontend
-            if (dto.MultiButtons != null && dto.MultiButtons.Any())
-            {
-                var buttons = dto.MultiButtons
-                    .Where(btn => !string.IsNullOrWhiteSpace(btn.ButtonText) && !string.IsNullOrWhiteSpace(btn.TargetUrl))
-                    .Take(3)
-                    .Select((btn, index) => new CampaignButton
-                    {
-                        Id = Guid.NewGuid(),
-                        CampaignId = campaignId,
-                        Title = btn.ButtonText,
-                        Type = btn.ButtonType ?? "url",
-                        Value = btn.TargetUrl,
-                        Position = index + 1,
-                        IsFromTemplate = false
-                    });
+                    // store the (possibly aligned) template name
+                    MessageTemplate = dto.MessageTemplate,      // keep original text for UI if you use it
+                    TemplateId = selectedTemplateName,          // ensure start template matches flow entry when available
 
-                await _context.CampaignButtons.AddRangeAsync(buttons);
-            }
+                    FollowUpTemplateId = dto.FollowUpTemplateId,
+                    CampaignType = "image",
+                    CtaId = dto.CtaId,
+                    CTAFlowConfigId = savedFlowId,              // 👈 persist what UI sent (or null if no flow)
 
-            // ======================== Dynamic buttons merge ========================
-            // EXACTLY mirrors your text-creator pattern to avoid type issues with ButtonMetadataDto
-            if (template != null && template.ButtonParams?.Count > 0)
-            {
-                var buttonsToSave = new List<CampaignButton>();
-                var userButtons = dto.ButtonParams ?? new List<CampaignButtonParamFromMetaDto>();
+                    ScheduledAt = dto.ScheduledAt,
+                    CreatedBy = createdBy,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                    Status = "Draft",
 
-                var total = Math.Min(3, template.ButtonParams.Count);
-                for (int i = 0; i < total; i++)
+                    // image-specific fields
+                    ImageUrl = dto.ImageUrl,
+                    ImageCaption = dto.ImageCaption,
+
+                    // params/body snapshot (useful for previews & auditing)
+                    TemplateParameters = JsonConvert.SerializeObject(dto.TemplateParameters ?? new List<string>()),
+                    MessageBody = resolvedBody
+                };
+
+                // 🔒 Step 2.1: Snapshot template schema (image path)
+                try
                 {
-                    var tplBtn = template.ButtonParams[i];                         // ButtonMetadataDto: Text, Type, SubType, Index, ParameterValue
-                    var isDynamic = (tplBtn.ParameterValue?.Contains("{{1}}") ?? false);
+                    var snapshotMeta = await _templateFetcherService.GetTemplateMetaAsync(
+                        businessId,
+                        selectedTemplateName,
+                        language: null,
+                        provider: null
+                    );
 
-                    var userBtn = userButtons.FirstOrDefault(b => b.Position == i + 1);
-                    var valueToSave = (isDynamic && userBtn != null)
-                        ? userBtn.Value?.Trim()                                    // user override for dynamic URL
-                        : tplBtn.ParameterValue;                                   // pattern or static value from meta
-
-                    buttonsToSave.Add(new CampaignButton
-                    {
-                        Id = Guid.NewGuid(),
-                        CampaignId = campaignId,
-                        Title = tplBtn.Text,                                       // from ButtonMetadataDto
-                        Type = tplBtn.Type,                                        // from ButtonMetadataDto
-                        Value = valueToSave,
-                        Position = i + 1,
-                        IsFromTemplate = true
-                    });
+                    campaign.TemplateSchemaSnapshot = snapshotMeta != null
+                        ? JsonConvert.SerializeObject(snapshotMeta)
+                        : JsonConvert.SerializeObject(new
+                        {
+                            Provider = "",
+                            TemplateName = selectedTemplateName,
+                            Language = template?.Language ?? ""
+                        });
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "⚠️ Template schema snapshot failed for (image) campaign {CampaignId}", campaignId);
                 }
 
-                await _context.CampaignButtons.AddRangeAsync(buttonsToSave);
+                await _context.Campaigns.AddAsync(campaign);
+
+                // ✅ Step 2: Assign contacts (leave SentAt null until send)
+                if (dto.ContactIds != null && dto.ContactIds.Any())
+                {
+                    // ✅ Optional: dedupe contactIds to avoid duplicate recipient rows
+                    var uniqueContactIds = dto.ContactIds.Distinct().ToList();
+
+                    var recipients = uniqueContactIds.Select(contactId => new CampaignRecipient
+                    {
+                        Id = Guid.NewGuid(),
+                        CampaignId = campaignId,
+                        ContactId = contactId,
+                        BusinessId = businessId,
+                        Status = "Pending",
+                        SentAt = null,
+                        UpdatedAt = DateTime.UtcNow
+                    });
+
+                    await _context.CampaignRecipients.AddRangeAsync(recipients);
+                }
+
+                // ✅ Step 3a: Save manual buttons from frontend
+                if (dto.MultiButtons != null && dto.MultiButtons.Any())
+                {
+                    var buttons = dto.MultiButtons
+                        .Where(btn => !string.IsNullOrWhiteSpace(btn.ButtonText) && !string.IsNullOrWhiteSpace(btn.TargetUrl))
+                        .Take(3)
+                        .Select((btn, index) => new CampaignButton
+                        {
+                            Id = Guid.NewGuid(),
+                            CampaignId = campaignId,
+                            Title = btn.ButtonText,
+                            Type = btn.ButtonType ?? "url",
+                            Value = btn.TargetUrl,
+                            Position = index + 1,
+                            IsFromTemplate = false
+                        });
+
+                    await _context.CampaignButtons.AddRangeAsync(buttons);
+                }
+
+                // ======================== Dynamic buttons merge ========================
+                if (template != null && template.ButtonParams?.Count > 0)
+                {
+                    var buttonsToSave = new List<CampaignButton>();
+                    var userButtons = dto.ButtonParams ?? new List<CampaignButtonParamFromMetaDto>();
+
+                    var total = Math.Min(3, template.ButtonParams.Count);
+                    for (int i = 0; i < total; i++)
+                    {
+                        var tplBtn = template.ButtonParams[i];
+                        var isDynamic = (tplBtn.ParameterValue?.Contains("{{1}}") ?? false);
+
+                        var userBtn = userButtons.FirstOrDefault(b => b.Position == i + 1);
+                        var valueToSave = (isDynamic && userBtn != null)
+                            ? userBtn.Value?.Trim()
+                            : tplBtn.ParameterValue;
+
+                        buttonsToSave.Add(new CampaignButton
+                        {
+                            Id = Guid.NewGuid(),
+                            CampaignId = campaignId,
+                            Title = tplBtn.Text,
+                            Type = tplBtn.Type,
+                            Value = valueToSave,
+                            Position = i + 1,
+                            IsFromTemplate = true
+                        });
+                    }
+
+                    await _context.CampaignButtons.AddRangeAsync(buttonsToSave);
+                }
+                // ======================================================================
+
+                await _context.SaveChangesAsync();
+                await tx.CommitAsync();
+
+                Log.Information("✅ Image campaign '{Name}' created | FlowId: {Flow} | EntryTemplate: {Entry} | Recipients: {Contacts} | UserButtons: {ManualButtons} | TemplateButtons: {TemplateButtons} | Params: {Params}",
+                    normalizedName,
+                    savedFlowId,
+                    entryStep?.TemplateToSend ?? selectedTemplateName,
+                    dto.ContactIds?.Count ?? 0,
+                    dto.MultiButtons?.Count ?? 0,
+                    template?.ButtonParams?.Count ?? 0,
+                    dto.TemplateParameters?.Count ?? 0
+                );
+
+                return campaignId;
             }
-            // ======================================================================
-
-            await _context.SaveChangesAsync();
-
-            Log.Information("✅ Image campaign '{Name}' created | FlowId: {Flow} | EntryTemplate: {Entry} | Recipients: {Contacts} | UserButtons: {ManualButtons} | TemplateButtons: {TemplateButtons} | Params: {Params}",
-                dto.Name,
-                savedFlowId,
-                entryStep?.TemplateToSend ?? selectedTemplateName,
-                dto.ContactIds?.Count ?? 0,
-                dto.MultiButtons?.Count ?? 0,
-                template?.ButtonParams?.Count ?? 0,
-                dto.TemplateParameters?.Count ?? 0
-            );
-
-            return campaignId;
+            catch
+            {
+                await tx.RollbackAsync();
+                throw;
+            }
         }
+
+
+
         #endregion
 
-     
+
         public async Task<bool> SendCampaignAsync(Guid campaignId, string ipAddress, string userAgent)
         {
             // 1) Load campaign (no tracking)
@@ -1579,7 +1344,7 @@ namespace xbytechat.api.Features.CampaignModule.Services
                 ContactId = id,
                 BusinessId = businessId,
                 Status = "Pending",
-                SentAt = DateTime.UtcNow,
+                SentAt = null,
                 UpdatedAt = DateTime.UtcNow
             });
 
@@ -1668,8 +1433,7 @@ namespace xbytechat.api.Features.CampaignModule.Services
             }
         }
 
-        // #region  This region include all the code related to sending text and image based
-
+   
         public async Task<ResponseResult> SendTemplateCampaignWithTypeDetectionAsync(Guid campaignId, CancellationToken ct = default)
         {
             var correlationId = Guid.NewGuid();
@@ -1682,7 +1446,7 @@ namespace xbytechat.api.Features.CampaignModule.Services
 
             _logger.LogInformation("[SendDetect] BEGIN send for campaign {CampaignId}", campaignId);
 
-            // 1) Load a slim campaign snapshot 
+            // 1) Load a slim campaign snapshot
             var campaignSnap = await _context.Campaigns
                 .AsNoTracking()
                 .Where(c => c.Id == campaignId && !c.IsDeleted)
@@ -1800,8 +1564,9 @@ namespace xbytechat.api.Features.CampaignModule.Services
                 recomputedBodyCount = CountBodyPlaceholdersFromRaw(
                     templateRow.RawJson,
                     templateRow.Body,
-                    templateRow.ParameterFormat // <- now passed through
+                    templateRow.ParameterFormat
                 );
+
                 if (recomputedBodyCount != Math.Max(0, templateRow.BodyVarCount))
                 {
                     _logger.LogWarning("[SendDetect] PlaceholderCount mismatch: DB={DbCount} recomputed(BODY)={Recomputed} tpl={Tpl}",
@@ -1880,7 +1645,7 @@ namespace xbytechat.api.Features.CampaignModule.Services
                         PhoneE164 = r.AMPhoneE164,
                         PhoneRaw = r.AMPhoneRaw,
                         Name = r.AMName,
-                        AttributesJson = r.AMAttributes   // <-- add this
+                        AttributesJson = r.AMAttributes
                     } : null
                 }).ToList()
             };
@@ -2069,6 +1834,12 @@ namespace xbytechat.api.Features.CampaignModule.Services
 
                     enqueueSw.Stop();
                     _logger.LogInformation("[SendDetect] Enqueue done in {Ms} ms. Items={Count}", enqueueSw.ElapsedMilliseconds, items.Count);
+
+                    // ✅ FIX: Explicitly update Campaign status because campaignSnap was AsNoTracking()
+                    var campaignToUpdate = new Campaign { Id = campaignId, Status = "Processing" }; // or "Sending"
+                    _context.Campaigns.Attach(campaignToUpdate);
+                    _context.Entry(campaignToUpdate).Property(x => x.Status).IsModified = true;
+                    await _context.SaveChangesAsync(ct);
 
                     sw.Stop();
                     _logger.LogInformation("[SendDetect] ✅ SUCCESS in {Ms} ms", sw.ElapsedMilliseconds);
@@ -2955,36 +2726,7 @@ namespace xbytechat.api.Features.CampaignModule.Services
 
         
 
-    //    private List<object> BuildVideoTemplateComponents(
-    //        string provider, string headerVideoUrl,
-    //        List<string> templateParams, List<CampaignButton>? buttonList,
-    //        TemplateMetadataDto templateMeta, Guid campaignSendLogId,
-    //        Contact contact, out List<string> resolvedButtonUrls)
-    //    {
-    //        // Reuse your current builders to get BODY + BUTTONS
-    //        List<object> nonHeaderComponents;
-    //        if (string.Equals(provider, "PINNACLE", StringComparison.Ordinal))
-    //            nonHeaderComponents = BuildTextTemplateComponents_Pinnacle(
-    //                templateParams, buttonList, templateMeta, campaignSendLogId, contact, out resolvedButtonUrls);
-    //        else // META_CLOUD
-    //            nonHeaderComponents = BuildTextTemplateComponents_Meta(
-    //                templateParams, buttonList, templateMeta, campaignSendLogId, contact, out resolvedButtonUrls);
-
-    //        // Prepend the HEADER/VIDEO piece (WhatsApp shape for both providers)
-    //        var components = new List<object>
-    //{
-    //    new
-    //    {
-    //        type = "header",
-    //        parameters = new object[] {
-    //            new { type = "video", video = new { link = headerVideoUrl } }
-    //        }
-    //    }
-    //};
-
-    //        components.AddRange(nonHeaderComponents);
-    //        return components;
-    //    }
+    
         private bool BuildVideoTemplateComponents_Meta(
             string videoUrl, TemplateMetadataDto templateMeta,
             CampaignRecipient r, out List<object> components, out string? error)
@@ -3220,17 +2962,6 @@ namespace xbytechat.api.Features.CampaignModule.Services
         // META — TEXT TEMPLATE COMPONENTS
         // ======================================================
 
-        // Back-compat wrapper (old signature)
-        //private List<object> BuildTextTemplateComponents_Meta(
-        //    List<string> templateParams,
-        //    List<CampaignButton>? buttonList,
-        //    TemplateMetadataDto templateMeta,
-        //    Guid campaignSendLogId,
-        //    Contact contact)
-        //{
-        //    return BuildTextTemplateComponents_Meta(
-        //        templateParams, buttonList, templateMeta, campaignSendLogId, contact, out _);
-        //}
 
         // New overload with resolvedButtonUrls
         private List<object> BuildTextTemplateComponents_Meta(

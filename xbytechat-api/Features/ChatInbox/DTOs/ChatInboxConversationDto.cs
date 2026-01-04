@@ -29,7 +29,7 @@ namespace xbytechat.api.Features.ChatInbox.DTOs
         /// <summary>
         /// "New" | "Open" | "Pending" | "Closed"
         /// </summary>
-        public string Status { get; set; } = "New";
+        public string Status { get; set; } = "Open";
 
         /// <summary>
         /// WhatsApp number id (e.g. wa-num-1).
@@ -64,6 +64,8 @@ namespace xbytechat.api.Features.ChatInbox.DTOs
         public string? SourceName { get; set; }
 
         public DateTime? FirstSeenAt { get; set; }
+        public DateTime? LastInboundAt { get; set; }
+        public DateTime? LastOutboundAt { get; set; }
         public int TotalMessages { get; set; }
 
         public DateTime? LastAgentReplyAt { get; set; }

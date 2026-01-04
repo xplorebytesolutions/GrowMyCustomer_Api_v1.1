@@ -72,7 +72,7 @@ namespace xbytechat.api.Features.CampaignTracking.Models
         // 🔗 MessageLog reference (optional)
         public Guid? MessageLogId { get; set; }
         public MessageLog? MessageLog { get; set; }
-
+        [Required]
         public Guid BusinessId { get; set; }
 
         // 🆕 Flow context snapshot for deterministic click resolution

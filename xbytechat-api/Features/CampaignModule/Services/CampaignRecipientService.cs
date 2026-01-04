@@ -17,46 +17,56 @@ namespace xbytechat.api.Features.CampaignModule.Services
             _context = context;
         }
 
-        // 🔍 Get a single recipient by ID
-        public async Task<CampaignRecipientDto?> GetByIdAsync(Guid id)
+        public async Task<CampaignRecipientDto?> GetByIdAsync(Guid businessId, Guid id)
         {
             return await _context.CampaignRecipients
+                .AsNoTracking()
                 .Include(r => r.Contact)
-                .Where(r => r.Id == id)
+                .Include(r => r.AudienceMember)
+                .Where(r => r.BusinessId == businessId && r.Id == id)
                 .Select(r => new CampaignRecipientDto
                 {
                     Id = r.Id,
                     ContactId = r.ContactId,
-                    ContactName = r.Contact.Name,
-                    ContactPhone = r.Contact.PhoneNumber,
+                    ContactName = r.Contact != null
+                        ? (r.Contact.Name ?? string.Empty)
+                        : (r.AudienceMember != null ? (r.AudienceMember.Name ?? string.Empty) : string.Empty),
+                    ContactPhone = r.Contact != null
+                        ? (r.Contact.PhoneNumber ?? string.Empty)
+                        : (r.AudienceMember != null ? (r.AudienceMember.PhoneE164 ?? r.AudienceMember.PhoneRaw ?? string.Empty) : string.Empty),
                     Status = r.Status,
                     SentAt = r.SentAt
                 })
                 .FirstOrDefaultAsync();
         }
 
-        // 📦 Get all recipients of a specific campaign
-        public async Task<List<CampaignRecipientDto>> GetByCampaignIdAsync(Guid campaignId)
+        public async Task<List<CampaignRecipientDto>> GetByCampaignIdAsync(Guid businessId, Guid campaignId)
         {
             return await _context.CampaignRecipients
+                .AsNoTracking()
                 .Include(r => r.Contact)
-                .Where(r => r.CampaignId == campaignId)
+                .Include(r => r.AudienceMember)
+                .Where(r => r.BusinessId == businessId && r.CampaignId == campaignId)
                 .Select(r => new CampaignRecipientDto
                 {
                     Id = r.Id,
                     ContactId = r.ContactId,
-                    ContactName = r.Contact.Name,
-                    ContactPhone = r.Contact.PhoneNumber,
+                    ContactName = r.Contact != null
+                        ? (r.Contact.Name ?? string.Empty)
+                        : (r.AudienceMember != null ? (r.AudienceMember.Name ?? string.Empty) : string.Empty),
+                    ContactPhone = r.Contact != null
+                        ? (r.Contact.PhoneNumber ?? string.Empty)
+                        : (r.AudienceMember != null ? (r.AudienceMember.PhoneE164 ?? r.AudienceMember.PhoneRaw ?? string.Empty) : string.Empty),
                     Status = r.Status,
                     SentAt = r.SentAt
                 })
                 .ToListAsync();
         }
 
-        // ✏️ Update status of a specific recipient
-        public async Task<bool> UpdateStatusAsync(Guid recipientId, string newStatus)
+        public async Task<bool> UpdateStatusAsync(Guid businessId, Guid recipientId, string newStatus)
         {
-            var recipient = await _context.CampaignRecipients.FindAsync(recipientId);
+            var recipient = await _context.CampaignRecipients
+                .FirstOrDefaultAsync(r => r.BusinessId == businessId && r.Id == recipientId);
             if (recipient == null) return false;
 
             recipient.Status = newStatus;
@@ -66,11 +76,10 @@ namespace xbytechat.api.Features.CampaignModule.Services
             return true;
         }
 
-        // 💬 Track customer reply or CTA
-        // 🗣️ Track customer reply on a recipient
-        public async Task<bool> TrackReplyAsync(Guid recipientId, string replyText)
+        public async Task<bool> TrackReplyAsync(Guid businessId, Guid recipientId, string replyText)
         {
-            var recipient = await _context.CampaignRecipients.FindAsync(recipientId);
+            var recipient = await _context.CampaignRecipients
+                .FirstOrDefaultAsync(r => r.BusinessId == businessId && r.Id == recipientId);
             if (recipient == null) return false;
 
             recipient.ClickedCTA = replyText;
@@ -80,87 +89,59 @@ namespace xbytechat.api.Features.CampaignModule.Services
             return true;
         }
 
-
-        // 🔎 Global recipient search across all campaigns
-        // 🔍 Search recipients by optional status or keyword
-        public async Task<List<CampaignRecipientDto>> SearchRecipientsAsync(string status = null, string keyword = null)
+        public async Task<List<CampaignRecipientDto>> SearchRecipientsAsync(Guid businessId, string? status = null, string? keyword = null)
         {
             var query = _context.CampaignRecipients
+                .AsNoTracking()
                 .Include(r => r.Contact)
+                .Include(r => r.AudienceMember)
+                .Where(r => r.BusinessId == businessId)
                 .AsQueryable();
 
-            if (!string.IsNullOrEmpty(status))
+            if (!string.IsNullOrWhiteSpace(status))
                 query = query.Where(r => r.Status == status);
 
-            if (!string.IsNullOrEmpty(keyword))
+            if (!string.IsNullOrWhiteSpace(keyword))
+            {
                 query = query.Where(r =>
-                    r.Contact.Name.Contains(keyword) ||
-                    r.Contact.PhoneNumber.Contains(keyword)
-                );
+                    (r.Contact != null &&
+                     ((r.Contact.Name != null && r.Contact.Name.Contains(keyword)) ||
+                      (r.Contact.PhoneNumber != null && r.Contact.PhoneNumber.Contains(keyword))))
+                    ||
+                    (r.AudienceMember != null &&
+                     ((r.AudienceMember.Name != null && r.AudienceMember.Name.Contains(keyword)) ||
+                      (r.AudienceMember.PhoneE164 != null && r.AudienceMember.PhoneE164.Contains(keyword)) ||
+                      (r.AudienceMember.PhoneRaw != null && r.AudienceMember.PhoneRaw.Contains(keyword)))));
+            }
 
             return await query
                 .Select(r => new CampaignRecipientDto
                 {
                     Id = r.Id,
                     ContactId = r.ContactId,
-                    ContactName = r.Contact.Name,
-                    ContactPhone = r.Contact.PhoneNumber,
+                    ContactName = r.Contact != null
+                        ? (r.Contact.Name ?? string.Empty)
+                        : (r.AudienceMember != null ? (r.AudienceMember.Name ?? string.Empty) : string.Empty),
+                    ContactPhone = r.Contact != null
+                        ? (r.Contact.PhoneNumber ?? string.Empty)
+                        : (r.AudienceMember != null ? (r.AudienceMember.PhoneE164 ?? r.AudienceMember.PhoneRaw ?? string.Empty) : string.Empty),
                     Status = r.Status,
                     SentAt = r.SentAt
                 })
                 .ToListAsync();
         }
 
-        //public async Task AssignContactsToCampaignAsync(Guid campaignId, List<Guid> contactIds)
-        //{
-        //    var campaign = await _context.Campaigns
-        //        .AsNoTracking()
-        //        .FirstOrDefaultAsync(c => c.Id == campaignId);
-
-        //    if (campaign == null)
-        //        throw new Exception("Campaign not found.");
-
-        //    var businessId = campaign.BusinessId;
-
-        //    var existing = await _context.CampaignRecipients
-        //        .Where(r => r.CampaignId == campaignId && contactIds.Contains(r.ContactId))
-        //        .Select(r => r.ContactId)
-        //        .ToListAsync();
-
-        //    var newRecipients = contactIds
-        //        .Where(id => !existing.Contains(id))
-        //        .Select(contactId => new CampaignRecipient
-        //        {
-        //            Id = Guid.NewGuid(),
-        //            CampaignId = campaignId,
-        //            ContactId = contactId,
-        //            BusinessId = businessId, // ✅ required
-        //            Status = "Pending",
-        //            SentAt = DateTime.UtcNow,
-        //            UpdatedAt = DateTime.UtcNow,
-        //            IsAutoTagged = false
-        //        }).ToList();
-
-        //    if (newRecipients.Any())
-        //    {
-        //        await _context.CampaignRecipients.AddRangeAsync(newRecipients);
-        //        await _context.SaveChangesAsync();
-        //    }
-        //}
-
-        public async Task AssignContactsToCampaignAsync(Guid campaignId, List<Guid> contactIds)
+        public async Task AssignContactsToCampaignAsync(Guid businessId, Guid campaignId, List<Guid> contactIds)
         {
             var campaign = await _context.Campaigns
                 .AsNoTracking()
-                .FirstOrDefaultAsync(c => c.Id == campaignId);
+                .FirstOrDefaultAsync(c => c.Id == campaignId && c.BusinessId == businessId);
 
             if (campaign == null)
                 throw new Exception("Campaign not found.");
 
-            var businessId = campaign.BusinessId;
             var now = DateTime.UtcNow;
 
-            // 1) Sanitize inputs (no duplicates, no Guid.Empty)
             var contactIdsClean = (contactIds ?? new List<Guid>())
                 .Where(id => id != Guid.Empty)
                 .Distinct()
@@ -169,7 +150,6 @@ namespace xbytechat.api.Features.CampaignModule.Services
             if (contactIdsClean.Count == 0)
                 return;
 
-            // 2) Ensure all contacts belong to the same business (tenant safety)
             var validContactIds = await _context.Contacts
                 .Where(c => c.BusinessId == businessId && contactIdsClean.Contains(c.Id))
                 .Select(c => c.Id)
@@ -178,15 +158,14 @@ namespace xbytechat.api.Features.CampaignModule.Services
             if (validContactIds.Count == 0)
                 return;
 
-            // 3) Find existing recipients for this campaign (ContactId is Guid?)
             var existingContactIds = await _context.CampaignRecipients
-                .Where(r => r.CampaignId == campaignId
+                .Where(r => r.BusinessId == businessId
+                            && r.CampaignId == campaignId
                             && r.ContactId.HasValue
                             && validContactIds.Contains(r.ContactId.Value))
-                .Select(r => r.ContactId!.Value) // project to non-nullable Guid
+                .Select(r => r.ContactId!.Value)
                 .ToListAsync();
 
-            // 4) Create recipients only for truly new contacts
             var newContactIds = validContactIds.Except(existingContactIds).ToList();
             if (newContactIds.Count == 0)
                 return;
@@ -196,20 +175,16 @@ namespace xbytechat.api.Features.CampaignModule.Services
                 Id = Guid.NewGuid(),
                 CampaignId = campaignId,
                 BusinessId = businessId,
-                ContactId = contactId,         // non-null Guid
+                ContactId = contactId,
                 Status = "Pending",
-                // This is *assignment/materialization*, not send:
                 MaterializedAt = now,
-                SentAt = null,                 // leave null until actually sent
+                SentAt = null,
                 UpdatedAt = now,
                 IsAutoTagged = false
-                // AudienceMemberId/IdempotencyKey/etc. if your flow sets them here
             }).ToList();
 
             await _context.CampaignRecipients.AddRangeAsync(newRecipients);
             await _context.SaveChangesAsync();
         }
-
-
     }
 }

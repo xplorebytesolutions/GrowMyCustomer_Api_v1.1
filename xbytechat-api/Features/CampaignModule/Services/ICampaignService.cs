@@ -19,7 +19,7 @@ namespace xbytechat.api.Features.CampaignModule.Services
 
       
         /// 📋 Get all campaigns for the business
-        Task<List<CampaignSummaryDto>> GetAllCampaignsAsync(Guid businessId);
+        //Task<List<CampaignSummaryDto>> GetAllCampaignsAsync(Guid businessId);
 
         /// 📄 Get paginated campaigns
         Task<PaginatedResponse<CampaignSummaryDto>> GetPaginatedCampaignsAsync(Guid businessId, PaginatedRequest request);

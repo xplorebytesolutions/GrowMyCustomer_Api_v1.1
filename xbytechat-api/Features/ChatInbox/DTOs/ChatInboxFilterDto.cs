@@ -14,6 +14,7 @@ namespace xbytechat.api.Features.ChatInbox.DTOs
         /// </summary>
         public Guid BusinessId { get; set; }
 
+        public string? Cursor { get; set; }
         /// <summary>
         /// Currently logged-in user id (for "my" filter).
         /// Optional: if null, "my" filter is ignored.
@@ -21,9 +22,14 @@ namespace xbytechat.api.Features.ChatInbox.DTOs
         public Guid? CurrentUserId { get; set; }
 
         /// <summary>
-        /// "live" | "history" | "unassigned" | "my"
+        /// "live" | "older" | "unassigned" | "my" | "closed"
         /// </summary>
         public string? Tab { get; set; }
+
+        /// <summary>
+        /// Optional: fetch a single conversation by contact id.
+        /// </summary>
+        public Guid? ContactId { get; set; }
 
         /// <summary>
         /// WhatsApp number id, e.g. "wa-num-1". If null or "all", no filter.

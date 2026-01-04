@@ -20,8 +20,8 @@ namespace xbytechat.api.Features.CampaignModule.Models
         [MaxLength(512)]
         public string? Description { get; set; }  // useful in UI
                
-        public Guid? CampaignId { get; set; }
-        public Campaign? Campaign { get; set; }
+        //public Guid? CampaignId { get; set; }
+        //public Campaign? Campaign { get; set; }
 
         public Guid? CsvBatchId { get; set; }
         public CsvBatch? CsvBatch { get; set; }

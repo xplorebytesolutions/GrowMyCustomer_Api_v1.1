@@ -15,30 +15,24 @@ namespace xbytechat.api.Features.CampaignTracking.Controllers
 
         public CampaignSendLogController(
             ICampaignSendLogService logService,
-            ICampaignTrackingRetryService retryService
-        )
+            ICampaignTrackingRetryService retryService)
         {
             _logService = logService;
             _retryService = retryService;
         }
 
-        //[HttpGet("campaign/{campaignId}")]
-        //public async Task<IActionResult> GetLogsByCampaign(Guid campaignId)
-        //{
-        //    var logs = await _logService.GetLogsByCampaignIdAsync(campaignId);
-        //    return Ok(logs);
-        //}
         [HttpGet("campaign/{campaignId}")]
         public async Task<IActionResult> GetLogsByCampaign(
-         Guid campaignId,
-         [FromQuery] string? status,
-         [FromQuery] string? search,
-         [FromQuery] int page = 1,
-         [FromQuery] int pageSize = 10)
+            Guid campaignId,
+            [FromQuery] string? status,
+            [FromQuery] string? search,
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 10)
         {
             var result = await _logService.GetLogsByCampaignIdAsync(campaignId, status, search, page, pageSize);
             return Ok(result);
         }
+
         [HttpGet("campaign/{campaignId}/contact/{contactId}")]
         public async Task<IActionResult> GetLogsForContact(Guid campaignId, Guid contactId)
         {
@@ -79,7 +73,6 @@ namespace xbytechat.api.Features.CampaignTracking.Controllers
             return Ok(new { success = true });
         }
 
-        // ✅ FIXED: Retry a single log using correct interface method
         [HttpPost("{logId}/retry")]
         public async Task<IActionResult> RetrySingle(Guid logId)
         {
@@ -90,21 +83,59 @@ namespace xbytechat.api.Features.CampaignTracking.Controllers
             return Ok(new { success = true });
         }
 
-        // ✅ FIXED: Retry all failed logs using correct interface method
         [HttpPost("campaign/{campaignId}/retry-all")]
         public async Task<IActionResult> RetryAll(Guid campaignId)
         {
             var result = await _retryService.RetryFailedInCampaignAsync(campaignId);
             return Ok(new { success = true, retried = result });
         }
-        // ✅ FIXED: Get summary of campaign logs as per Campaign ID
+
         [HttpGet("campaign/{campaignId}/summary")]
-        public async Task<IActionResult> GetCampaignSummary(Guid campaignId)
+        public async Task<IActionResult> GetCampaignSummary(
+            Guid campaignId,
+            [FromQuery] DateTime? fromUtc,
+            [FromQuery] DateTime? toUtc,
+            [FromQuery] int repliedWindowDays = 7,
+            [FromQuery] Guid? runId = null)
         {
-            var summary = await _logService.GetCampaignSummaryAsync(campaignId);
+            if (repliedWindowDays < 0) repliedWindowDays = 0;
+            if (repliedWindowDays > 90) repliedWindowDays = 90;
+
+            var summary = await _logService.GetCampaignSummaryAsync(
+                campaignId: campaignId,
+                fromUtc: fromUtc,
+                toUtc: toUtc,
+                repliedWindowDays: repliedWindowDays,
+                runId: runId);
+
             return Ok(summary);
         }
 
+        [HttpGet("campaign/{campaignId}/contacts")]
+        public async Task<IActionResult> GetContactsByBucket(
+            Guid campaignId,
+            [FromQuery] string bucket = "sent",
+            [FromQuery] DateTime? fromUtc = null,
+            [FromQuery] DateTime? toUtc = null,
+            [FromQuery] int repliedWindowDays = 7,
+            [FromQuery] Guid? runId = null,
+            [FromQuery] string? search = null,
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 10)
+        {
+            var result = await _logService.GetContactsByStatBucketAsync(
+                campaignId,
+                bucket,
+                fromUtc,
+                toUtc,
+                repliedWindowDays,
+                runId,
+                search,
+                page,
+                pageSize);
+
+            return Ok(result);
+        }
     }
 
     public class DeliveryStatusUpdateDto

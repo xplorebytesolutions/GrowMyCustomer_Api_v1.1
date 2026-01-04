@@ -1,4 +1,6 @@
-﻿namespace xbytechat.api.Features.CampaignModule.DTOs
+﻿using System.Collections.Generic;
+
+namespace xbytechat.api.Features.CampaignModule.DTOs
 {
     public class CampaignSummaryDto
     {
@@ -14,5 +16,12 @@
         public string? ImageCaption { get; set; } // ✅ Add this
         public string? CtaTitle { get; set; } // Optional: For CTA info
         public int RecipientCount { get; set; } // Optional: To show 0/10 etc
+
+        public DateTime? SentAt { get; set; } // ✅ Added to track sent time
+
+        // ✅ Added for Preview
+        public string? MessageTemplate { get; set; } 
+        public List<CampaignButtonDto>? MultiButtons { get; set; }
     }
+        
 }
