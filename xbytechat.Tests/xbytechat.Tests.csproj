@@ -35,6 +35,7 @@
 
   <ItemGroup>
     <Folder Include="Features\Contacts\" />
+    <Folder Include="Features\ChatInbox\" />
   </ItemGroup>
 
 </Project>
