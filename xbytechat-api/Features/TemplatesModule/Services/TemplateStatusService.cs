@@ -1,7 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using xbytechat.api.Features.TemplateModule.Abstractions;
-using xbytechat.api.Features.TemplateModule.Utils;
-
 namespace xbytechat.api.Features.TemplateModule.Services;
 
 public sealed class TemplateStatusService : ITemplateStatusService
@@ -24,7 +22,8 @@ public sealed class TemplateStatusService : ITemplateStatusService
         if (draft is null)
             throw new KeyNotFoundException("Draft not found.");
 
-        var name = MetaNameHelper.FromKey(draft.Key, businessId, MetaNameHelper.ShortBizSuffix(businessId));
+        // Use the user-entered draft Key as the Meta template name (no suffixes / random chars).
+        var name = (draft.Key ?? string.Empty).Trim();
 
         // Query your SoT table
         var rows = await _db.WhatsAppTemplates

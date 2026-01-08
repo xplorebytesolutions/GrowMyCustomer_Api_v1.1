@@ -18,20 +18,24 @@ public sealed class TemplateDraftsController : ControllerBase
     private readonly ITemplateSubmissionService _submitter;
     private readonly ITemplateNameCheckService _nameCheck;
     private readonly ITemplateStatusService _status;
+
     private readonly ITemplateDraftLifecycleService _lifecycle;
+    private readonly IMetaTemplateClient _meta;
 
     public TemplateDraftsController(
         ITemplateDraftService drafts,
         ITemplateSubmissionService submitter,
         ITemplateNameCheckService nameCheck,
         ITemplateStatusService status,
-        ITemplateDraftLifecycleService lifecycle)
+        ITemplateDraftLifecycleService lifecycle,
+        IMetaTemplateClient meta)
     {
         _drafts = drafts;
         _submitter = submitter;
         _status = status;
         _nameCheck = nameCheck;
         _lifecycle = lifecycle;
+        _meta = meta;
     }
 
     // POST /api/template-builder/drafts
@@ -82,7 +86,7 @@ public sealed class TemplateDraftsController : ControllerBase
             message = "Drafts loaded.",
             businessId,
             count = items.Count,
-            items = items.Select(d => new { d.Id, d.Key, d.Category, d.DefaultLanguage, d.UpdatedAt })
+            items
         });
     }
 
@@ -107,6 +111,41 @@ public sealed class TemplateDraftsController : ControllerBase
             message = "Draft loaded.",
             draft
         });
+    }
+
+    // PATCH /api/template-builder/drafts/{draftId}
+    [HttpPatch("drafts/{draftId:guid}")]
+    [HttpPut("drafts/{draftId:guid}")]
+    public async Task<ActionResult<object>> UpdateDraft(Guid draftId, [FromBody] TemplateDraftUpdateDto dto, CancellationToken ct)
+    {
+        var businessId = User.GetBusinessId();
+        if (businessId == Guid.Empty)
+            return Unauthorized(new { success = false, message = "Invalid or missing BusinessId claim." });
+
+        if (draftId == Guid.Empty)
+            return BadRequest(new { success = false, message = "Invalid draftId." });
+
+        if (dto is null)
+            return BadRequest(new { success = false, message = "Body required" });
+
+        try
+        {
+            var updated = await _drafts.UpdateDraftAsync(businessId, draftId, dto, ct);
+            return Ok(new
+            {
+                success = true,
+                message = "Draft updated.",
+                draft = new { updated.Id, updated.Key, updated.Category, updated.DefaultLanguage, updated.UpdatedAt }
+            });
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound(new { success = false, message = "Draft not found." });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { success = false, message = ex.Message });
+        }
     }
 
     // POST /api/template-builder/drafts/{draftId}/variants
@@ -268,6 +307,21 @@ public sealed class TemplateDraftsController : ControllerBase
         return Ok(new { success = true, preview = dto });
     }
 
+    // GET /api/template-builder/media/{mediaId}
+    [HttpGet("media/{**mediaId}")]
+    public async Task<IActionResult> ProxyMedia(string mediaId, CancellationToken ct)
+    {
+        var businessId = User.GetBusinessId();
+        if (string.IsNullOrWhiteSpace(mediaId))
+             return BadRequest("Media ID required.");
+
+        var (stream, contentType) = await _meta.GetMediaStreamAsync(businessId, mediaId, ct);
+        if (stream == null)
+             return NotFound();
+
+        return File(stream, contentType ?? "application/octet-stream");
+    }
+
     // GET /api/template-builder/drafts/{draftId}/name-check?language=en_US
     [HttpGet("drafts/{draftId:guid}/name-check")]
     public async Task<ActionResult<object>> NameCheck(Guid draftId, [FromQuery] string? language, CancellationToken ct = default)
@@ -290,13 +344,36 @@ public sealed class TemplateDraftsController : ControllerBase
         });
     }
 
+    public sealed record DuplicateDraftRequest(string Key);
+
     // POST /api/template-builder/drafts/{draftId}/duplicate
     [HttpPost("drafts/{draftId:guid}/duplicate")]
-    public async Task<ActionResult<object>> Duplicate(Guid draftId, CancellationToken ct = default)
+    public async Task<ActionResult<object>> Duplicate(
+        Guid draftId,
+        [FromBody] DuplicateDraftRequest request,
+        CancellationToken ct = default)
     {
         var businessId = User.GetBusinessId();
-        var dup = await _lifecycle.DuplicateDraftAsync(businessId, draftId, ct);
-        return Ok(new { success = true, draftId = dup.Id, key = dup.Key });
+        if (request is null || string.IsNullOrWhiteSpace(request.Key))
+            return BadRequest(new { success = false, message = "New template name is required." });
+
+        try
+        {
+            var dup = await _lifecycle.DuplicateDraftAsync(businessId, draftId, request.Key, ct);
+            return Ok(new { success = true, draftId = dup.Id, key = dup.Key });
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound(new { success = false, message = "Draft not found." });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { success = false, message = ex.Message });
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { success = false, message = ex.Message });
+        }
     }
 
     // DELETE /api/template-builder/drafts/{draftId}

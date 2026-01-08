@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using System.Text.RegularExpressions;
 using xbytechat.api.Features.TemplateModule.Abstractions;
 using xbytechat.api.Features.TemplateModule.Models;
 using xbytechat.api.Features.TemplateModule.Services;
@@ -10,6 +11,7 @@ public sealed class TemplateDraftLifecycleService : ITemplateDraftLifecycleServi
 {
     private readonly AppDbContext _db;
     private readonly IMetaTemplateClient _meta;
+    private static readonly Regex MetaNameRx = new("^[a-z][a-z0-9_]*$", RegexOptions.Compiled);
 
     public TemplateDraftLifecycleService(AppDbContext db, IMetaTemplateClient meta)
     {
@@ -17,20 +19,27 @@ public sealed class TemplateDraftLifecycleService : ITemplateDraftLifecycleServi
         _meta = meta;
     }
 
-    public async Task<TemplateDraft> DuplicateDraftAsync(Guid businessId, Guid draftId, CancellationToken ct = default)
+    public async Task<TemplateDraft> DuplicateDraftAsync(Guid businessId, Guid draftId, string newKey, CancellationToken ct = default)
     {
         var src = await _db.TemplateDrafts.AsNoTracking()
             .FirstOrDefaultAsync(x => x.Id == draftId && x.BusinessId == businessId, ct);
         if (src is null) throw new KeyNotFoundException("Draft not found.");
 
-        var keyBase = src.Key;
-        var suffix = 2;
-        var newKey = $"{keyBase}_copy";
-        while (await _db.TemplateDrafts.AnyAsync(x => x.BusinessId == businessId && x.Key == newKey, ct))
-        {
-            newKey = $"{keyBase}_copy{suffix}";
-            suffix++;
-        }
+        newKey = (newKey ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(newKey))
+            throw new ArgumentException("Template name is required.", nameof(newKey));
+
+        if (newKey.Length > 25 || !MetaNameRx.IsMatch(newKey))
+            throw new ArgumentException(
+                "Invalid template name. Use lowercase letters/numbers/underscores, start with a letter, max 25 characters.",
+                nameof(newKey));
+
+        var exists = await _db.TemplateDrafts.AnyAsync(
+            x => x.BusinessId == businessId && x.Key == newKey,
+            ct);
+
+        if (exists)
+            throw new InvalidOperationException("Template name already exists. Please choose a different name.");
 
         var now = DateTime.UtcNow;
         var dup = new TemplateDraft
@@ -60,7 +69,7 @@ public sealed class TemplateDraftLifecycleService : ITemplateDraftLifecycleServi
                 Language = v.Language,
                 HeaderType = v.HeaderType,
                 HeaderText = v.HeaderText,
-                HeaderMediaLocalUrl = v.HeaderMediaLocalUrl, // keep handle if present; user can replace
+                HeaderMediaLocalUrl = v.HeaderMediaLocalUrl,
                 BodyText = v.BodyText,
                 FooterText = v.FooterText,
                 ButtonsJson = v.ButtonsJson,
@@ -74,7 +83,6 @@ public sealed class TemplateDraftLifecycleService : ITemplateDraftLifecycleServi
         return dup;
     }
 
-
     public async Task<bool> DeleteDraftAsync(Guid businessId, Guid draftId, CancellationToken ct = default)
     {
         // 1) Find the draft scoped to the tenant
@@ -83,9 +91,42 @@ public sealed class TemplateDraftLifecycleService : ITemplateDraftLifecycleServi
 
         if (draft is null) return false;
 
-        // 2) Hard-delete variants explicitly (no nav needed)
+        // 2) Fetch variants to delete from Meta
+        var variants = await _db.TemplateDraftVariants
+            .Where(v => v.TemplateDraftId == draft.Id)
+            .ToListAsync(ct);
 
-        // If you're on EF Core 7+, this is the fastest way:
+        foreach (var v in variants)
+        {
+            // Try to delete from Meta (best effort)
+            try
+            {
+                await _meta.DeleteTemplateAsync(businessId, draft.Key, v.Language, ct);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DeleteDraft] Meta delete warning for {draft.Key}/{v.Language}: {ex.Message}");
+            }
+
+            // Also Soft-delete locally in WhatsAppTemplates (synced table)
+            var syncRows = await _db.WhatsAppTemplates
+                .Where(t => t.BusinessId == businessId && t.Name == draft.Key && t.LanguageCode == v.Language)
+                .ToListAsync(ct);
+
+            if (syncRows.Count > 0)
+            {
+                var now = DateTime.UtcNow;
+                foreach (var t in syncRows)
+                {
+                    t.IsActive = false;
+                    t.Status = "DELETED";
+                    t.UpdatedAt = now;
+                    t.LastSyncedAt = now;
+                }
+            }
+        }
+
+        // 3) Hard-delete variants explicitly
         try
         {
             await _db.TemplateDraftVariants
@@ -94,22 +135,17 @@ public sealed class TemplateDraftLifecycleService : ITemplateDraftLifecycleServi
         }
         catch (NotSupportedException)
         {
-            // Fallback for EF Core < 7: load + RemoveRange
-            var children = await _db.TemplateDraftVariants
-                .Where(v => v.TemplateDraftId == draft.Id)
-                .ToListAsync(ct);
-            if (children.Count > 0)
-                _db.TemplateDraftVariants.RemoveRange(children);
+            if (variants.Count > 0)
+                _db.TemplateDraftVariants.RemoveRange(variants);
         }
 
-        // 3) Delete the parent draft
+        // 4) Delete the parent draft
         _db.TemplateDrafts.Remove(draft);
 
-        // 4) Commit
+        // 5) Commit
         await _db.SaveChangesAsync(ct);
         return true;
     }
-
 
     public async Task<bool> DeleteApprovedTemplateAsync(Guid businessId, string name, string language, CancellationToken ct = default)
     {

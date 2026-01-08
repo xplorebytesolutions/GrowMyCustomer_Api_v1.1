@@ -14,5 +14,5 @@ public sealed class UploadLimitsOptions
     /// If true, the upload service returns a generated fake handle instead of calling Meta.
     /// Flip to false when you implement the real HTTP resumable flow.
     /// </summary>
-    public bool UseStubHandle { get; set; } = true;
+    public bool UseStubHandle { get; set; } = false;
 }

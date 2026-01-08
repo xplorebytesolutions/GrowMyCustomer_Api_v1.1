@@ -4,7 +4,8 @@ public sealed record MetaCredentials(
     string AccessToken,
     string GraphBaseUrl,
     string GraphVersion,
-    string WabaId
+    string WabaId,
+    string? PhoneNumberId
 );
 
 public interface IMetaCredentialsResolver

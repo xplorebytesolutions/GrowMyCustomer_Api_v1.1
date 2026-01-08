@@ -46,19 +46,24 @@ namespace xbytechat.api.WhatsAppSettings.Controllers
         [HttpGet("{businessId:guid}")]
         [Authorize]
         public async Task<IActionResult> List(
-      Guid businessId,
-      [FromQuery] string? q = null,
-      [FromQuery] string? status = "APPROVED",
-      [FromQuery] string? language = null,
-      [FromQuery] string? provider = null)
+            Guid businessId,
+            [FromQuery] string? q = null,
+            [FromQuery] string? status = "APPROVED",
+            [FromQuery] string? language = null,
+            [FromQuery] string? provider = null,
+            [FromQuery] string? category = null,
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 10,
+            [FromQuery] string sortKey = "updatedAt",
+            [FromQuery] string sortDir = "desc")
         {
             var query = _db.WhatsAppTemplates
                 .AsNoTracking()
                 .Where(x => x.BusinessId == businessId && x.IsActive);
 
-            if (!string.IsNullOrWhiteSpace(status))
+            if (!string.IsNullOrWhiteSpace(status) && !status.Equals("ALL", StringComparison.OrdinalIgnoreCase))
             {
-                var s = status.Trim().ToUpperInvariant();     // stored uppercase
+                var s = status.Trim().ToUpperInvariant();
                 query = query.Where(x => x.Status == s);
             }
 
@@ -70,8 +75,14 @@ namespace xbytechat.api.WhatsAppSettings.Controllers
 
             if (!string.IsNullOrWhiteSpace(provider))
             {
-                var prov = provider.Trim().ToUpperInvariant(); // stored uppercase
+                var prov = provider.Trim().ToUpperInvariant();
                 query = query.Where(x => x.Provider == prov);
+            }
+
+            if (!string.IsNullOrWhiteSpace(category))
+            {
+                var cat = category.Trim().ToUpperInvariant();
+                query = query.Where(x => x.Category == cat);
             }
 
             if (!string.IsNullOrWhiteSpace(q))
@@ -82,20 +93,47 @@ namespace xbytechat.api.WhatsAppSettings.Controllers
                     (x.Body != null && x.Body.Contains(term)));
             }
 
+            // Sorting
+            bool isAsc = sortDir?.ToLowerInvariant() == "asc";
+            var sortKeyLower = sortKey?.ToLowerInvariant();
+
+            query = sortKeyLower switch
+            {
+                "name" => isAsc ? query.OrderBy(x => x.Name) : query.OrderByDescending(x => x.Name),
+                "category" => isAsc ? query.OrderBy(x => x.Category) : query.OrderByDescending(x => x.Category),
+                "language" => isAsc ? query.OrderBy(x => x.LanguageCode) : query.OrderByDescending(x => x.LanguageCode),
+                "status" => isAsc ? query.OrderBy(x => x.Status) : query.OrderByDescending(x => x.Status),
+                "updatedat" => isAsc ? query.OrderBy(x => x.UpdatedAt) : query.OrderByDescending(x => x.UpdatedAt),
+                _ => query.OrderByDescending(x => x.UpdatedAt)
+            };
+
+            var totalCount = await query.CountAsync();
             var items = await query
-                .OrderBy(x => x.Name)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
                 .Select(x => new
                 {
                     x.Name,
                     x.LanguageCode,
                     x.Status,
                     x.Category,
-                    BodyVarCount = x.BodyVarCount, // <-- replaces PlaceholderCount
-                    x.UrlButtons
+                    x.BodyPreview,
+                    BodyVarCount = x.BodyVarCount,
+                    x.UrlButtons,
+                    x.UpdatedAt,
+                    x.LastSyncedAt
                 })
                 .ToListAsync();
 
-            return Ok(new { success = true, templates = items });
+            return Ok(new
+            {
+                success = true,
+                templates = items,
+                totalCount,
+                page,
+                pageSize,
+                totalPages = (int)Math.Ceiling((double)totalCount / pageSize)
+            });
         }
 
 

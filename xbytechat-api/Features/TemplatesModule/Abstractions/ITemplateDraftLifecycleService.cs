@@ -4,7 +4,7 @@ namespace xbytechat.api.Features.TemplateModule.Abstractions;
 
 public interface ITemplateDraftLifecycleService
 {
-    Task<TemplateDraft> DuplicateDraftAsync(Guid businessId, Guid draftId, CancellationToken ct = default);
+    Task<TemplateDraft> DuplicateDraftAsync(Guid businessId, Guid draftId, string newKey, CancellationToken ct = default);
     Task<bool> DeleteDraftAsync(Guid businessId, Guid draftId, CancellationToken ct = default);
 
     /// <summary>Delete an approved WhatsApp template at Meta and soft-delete it locally.</summary>

@@ -46,7 +46,8 @@ public sealed class MetaCredentialsResolver : IMetaCredentialsResolver
             AccessToken: token,
             GraphBaseUrl: baseUrl,
             GraphVersion: version,   // can be "" if ApiUrl had no version
-            WabaId: wabaId
+            WabaId: wabaId,
+            PhoneNumberId: s.PhoneNumberId
         );
     }
 }

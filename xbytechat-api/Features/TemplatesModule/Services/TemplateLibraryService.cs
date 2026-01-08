@@ -80,13 +80,16 @@ public sealed class TemplateLibraryService : ITemplateLibraryService
                 $"Requested: [{string.Join(", ", targetLangs)}]; " +
                 $"Available: [{string.Join(", ", availableLangs)}]");
 
-        // ---- Make a unique key for the business if needed ----
-        var key = item.Key;
+        // ---- Create an internal unique placeholder key (user must pick their own name in the editor) ----
+        // Note: TemplateDrafts has a unique index on (BusinessId, Key), so we must generate a unique value.
+        // We intentionally do NOT reuse item.Key or append random chars to user-facing names.
+        var baseKey = $"__lib__{item.Industry}_{item.Key}";
+        var key = baseKey;
         var suffix = 1;
         while (await _db.TemplateDrafts.AnyAsync(x => x.BusinessId == businessId && x.Key == key, ct))
         {
             suffix++;
-            key = $"{item.Key}_{suffix}";
+            key = $"{baseKey}_{suffix}";
         }
 
         // ---- Create draft ----

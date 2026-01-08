@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using xbytechat.api.Features.TemplateModule.DTOs;
+using xbytechat.api.Features.TemplateModule.Validation;
 
 namespace xbytechat.api.Features.TemplateModule.Payload;
 
@@ -27,7 +28,7 @@ public static class MetaComponentsBuilder
                 {
                     type = "HEADER",
                     format = "TEXT",
-                    text = headerText ?? string.Empty
+                    text = (headerText ?? string.Empty).Trim()
                 });
             }
             else
@@ -45,12 +46,31 @@ public static class MetaComponentsBuilder
             }
         }
 
-        // Body
-        components.Add(new
+        // Body (include examples for placeholders inside BODY.example as required by Meta)
+        var bodySlots = PlaceholderHelper.ExtractSlots(bodyText);
+        var maxIndex = bodySlots.Count > 0 ? bodySlots.Max() : 0;
+        var bodyExampleRow = new List<string>();
+        for (int i = 1; i <= maxIndex; i++)
         {
-            type = "BODY",
-            text = bodyText
-        });
+            examplesMap.TryGetValue(i.ToString(), out var val);
+            bodyExampleRow.Add(val ?? "");
+        }
+
+        components.Add(bodyExampleRow.Count > 0
+            ? new
+            {
+                type = "BODY",
+                text = bodyText.Trim(),
+                example = new
+                {
+                    body_text = new[] { bodyExampleRow.ToArray() }
+                }
+            }
+            : new
+            {
+                type = "BODY",
+                text = bodyText.Trim()
+            });
 
         // Footer
         if (!string.IsNullOrWhiteSpace(footerText))
@@ -58,7 +78,7 @@ public static class MetaComponentsBuilder
             components.Add(new
             {
                 type = "FOOTER",
-                text = footerText
+                text = footerText.Trim()
             });
         }
 
@@ -70,15 +90,15 @@ public static class MetaComponentsBuilder
             {
                 if (b.Type.Equals("QUICK_REPLY", StringComparison.OrdinalIgnoreCase))
                 {
-                    btns.Add(new { type = "QUICK_REPLY", text = b.Text });
+                    btns.Add(new { type = "QUICK_REPLY", text = b.Text.Trim() });
                 }
                 else if (b.Type.Equals("URL", StringComparison.OrdinalIgnoreCase))
                 {
-                    btns.Add(new { type = "URL", text = b.Text, url = b.Url });
+                    btns.Add(new { type = "URL", text = b.Text.Trim(), url = (b.Url ?? "").Trim() });
                 }
                 else if (b.Type.Equals("PHONE", StringComparison.OrdinalIgnoreCase))
                 {
-                    btns.Add(new { type = "PHONE_NUMBER", text = b.Text, phone_number = b.Phone });
+                    btns.Add(new { type = "PHONE_NUMBER", text = b.Text.Trim(), phone_number = (b.Phone ?? "").Trim() });
                 }
             }
 
@@ -92,27 +112,12 @@ public static class MetaComponentsBuilder
             }
         }
 
-        // Examples: WA expects arrays per component; for body variables, supply example text array
-        // We map {"1":"John","2":"12345"} -> [["John","12345"]]
-        var maxIndex = 0;
-        foreach (var k in examplesMap.Keys)
-        {
-            if (int.TryParse(k, out var n) && n > maxIndex) maxIndex = n;
-        }
-        var bodyExampleRow = new List<string>();
-        for (int i = 1; i <= maxIndex; i++)
-        {
-            examplesMap.TryGetValue(i.ToString(), out var val);
-            bodyExampleRow.Add(val ?? "");
-        }
-
+        // Keep a top-level examples projection for UI/debug (Meta requires it inside BODY.example).
         var examples = new
         {
-            // aligns with newer Graph requirements (body_text examples)
-            // bodyExampleRow: List<string>  -> convert to string[] so both branches are string[][]
             body_text = bodyExampleRow.Count > 0
-         ? new[] { bodyExampleRow.ToArray() }
-         : Array.Empty<string[]>()
+                ? new[] { bodyExampleRow.ToArray() }
+                : Array.Empty<string[]>()
         };
 
 

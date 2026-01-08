@@ -61,6 +61,8 @@ public static class VariantValidator
                 r.Add($"At most {TemplateRules.MaxButtons} buttons are allowed.");
 
             int phoneCtas = 0;
+            int urlCtas = 0;
+            int quickReplies = 0;
             var quickReplyTexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var b in dto.Buttons)
@@ -77,6 +79,7 @@ public static class VariantValidator
                 }
                 else if (b.Type.Equals("QUICK_REPLY", StringComparison.OrdinalIgnoreCase))
                 {
+                    quickReplies++;
                     if (b.Text.Length > TemplateRules.MaxQuickReplyText)
                         r.Add($"Quick Reply text too long (>{TemplateRules.MaxQuickReplyText}).");
                     if (!quickReplyTexts.Add(b.Text))
@@ -85,6 +88,7 @@ public static class VariantValidator
 
                 if (b.Type.Equals("URL", StringComparison.OrdinalIgnoreCase))
                 {
+                    urlCtas++;
                     if (!TemplateRules.IsValidUrl(b.Url))
                         r.Add("URL button must have a valid http(s) Url.");
                 }
@@ -98,6 +102,12 @@ public static class VariantValidator
             }
 
             if (phoneCtas > 1) r.Add("Only one PHONE CTA button is allowed.");
+
+            var ctaCount = urlCtas + phoneCtas;
+            if (urlCtas > 1)
+                r.Add("Only one URL CTA button is allowed.");
+            if (ctaCount > 2)
+                r.Add("Call-to-Action buttons allow a maximum of 2 (URL + PHONE).");
         }
 
         // examples for placeholders

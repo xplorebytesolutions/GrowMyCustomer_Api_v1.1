@@ -68,8 +68,20 @@ public sealed class TemplateSubmissionService : ITemplateSubmissionService
             };
         }
 
-        // 3) Derive Meta template name from Key (+ short biz suffix for safety)
-        var name = MetaNameHelper.FromKey(draft.Key, businessId, MetaNameHelper.ShortBizSuffix(businessId));
+        // 3) Use the user-entered draft Key as the Meta template name (no business suffixes / random chars).
+        var name = (draft.Key ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(name))
+            return new TemplateSubmitResponseDto { Success = false, Message = "Template name is required." };
+
+        // Meta template name rules: lowercase letters, numbers, underscores, must start with a letter, max 25 chars.
+        if (name.Length > 25 || !System.Text.RegularExpressions.Regex.IsMatch(name, "^[a-z][a-z0-9_]*$"))
+        {
+            return new TemplateSubmitResponseDto
+            {
+                Success = false,
+                Message = "Invalid template name. Use lowercase letters/numbers/underscores, start with a letter, max 25 characters."
+            };
+        }
 
         // 4) Submit per language
         var results = new List<SubmittedVariantResult>();
@@ -93,11 +105,28 @@ public sealed class TemplateSubmissionService : ITemplateSubmissionService
                     });
                     continue;
                 }
-                headerMetaId = await _meta.UploadMediaAsync(businessId, v.HeaderMediaLocalUrl!, v.HeaderType, ct);
+                try
+                {
+                    headerMetaId = await _meta.UploadMediaAsync(businessId, v.HeaderMediaLocalUrl!, v.HeaderType, ct);
+                }
+                catch (Exception ex)
+                {
+                    results.Add(new SubmittedVariantResult
+                    {
+                        Language = v.Language,
+                        Status = "FAILED",
+                        RejectionReason = ex.Message
+                    });
+                    continue;
+                }
             }
 
             var (components, examplePayload) =
                 MetaComponentsBuilder.Build(v.HeaderType, v.HeaderText, headerMetaId, v.BodyText, v.FooterText, buttons, examples);
+
+            // DEBUG: Log the payload to catch invalid parameter sources
+            Console.WriteLine($"[Meta Submit] Components: {System.Text.Json.JsonSerializer.Serialize(components)}");
+            Console.WriteLine($"[Meta Submit] Examples: {System.Text.Json.JsonSerializer.Serialize(examplePayload)}");
 
             var created = await _meta.CreateTemplateAsync(
                 businessId: businessId,
@@ -112,8 +141,8 @@ public sealed class TemplateSubmissionService : ITemplateSubmissionService
             results.Add(new SubmittedVariantResult
             {
                 Language = v.Language,
-                Status = created ? "PENDING" : "FAILED",
-                RejectionReason = created ? null : "Meta create call failed."
+                Status = created.Success ? "PENDING" : "FAILED",
+                RejectionReason = created.Success ? null : (created.Error ?? "Meta create call failed.")
             });
         }
 
@@ -148,9 +177,11 @@ public sealed class TemplateSubmissionService : ITemplateSubmissionService
         return Task.FromResult(0);
     }
 
+    private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
+
     private static T? SafeDeserialize<T>(string? json)
     {
         if (string.IsNullOrWhiteSpace(json)) return default;
-        try { return JsonSerializer.Deserialize<T>(json!); } catch { return default; }
+        try { return JsonSerializer.Deserialize<T>(json!, JsonOpts); } catch { return default; }
     }
 }

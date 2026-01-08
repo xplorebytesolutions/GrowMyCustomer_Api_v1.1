@@ -6,10 +6,11 @@ namespace xbytechat.api.Features.TemplateModule.Abstractions;
 public interface ITemplateDraftService
 {
     Task<TemplateDraft> CreateDraftAsync(Guid businessId, TemplateDraftCreateDto dto, CancellationToken ct = default);
+    Task<TemplateDraft> UpdateDraftAsync(Guid businessId, Guid draftId, TemplateDraftUpdateDto dto, CancellationToken ct = default);
     Task<TemplateDraftVariant> UpsertVariantAsync(Guid businessId, Guid draftId, TemplateDraftVariantUpsertDto dto, CancellationToken ct = default);
     Task<bool> ValidateAsync(Guid businessId, Guid draftId, CancellationToken ct = default);
     Task<TemplateDraft?> GetDraftAsync(Guid businessId, Guid draftId, CancellationToken ct = default);
-    Task<IReadOnlyList<TemplateDraft>> ListDraftsAsync(Guid businessId, CancellationToken ct = default);
+    Task<IReadOnlyList<DraftListItemDto>> ListDraftsAsync(Guid businessId, CancellationToken ct = default);
     Task<(bool ok, Dictionary<string, List<string>> errors)> ValidateAllAsync(Guid businessId, Guid draftId, CancellationToken ct = default);
     Task<bool> SetHeaderHandleAsync(
     Guid businessId,

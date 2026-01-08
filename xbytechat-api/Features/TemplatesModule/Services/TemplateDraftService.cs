@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using xbytechat.api.Features.TemplateModule.Abstractions;
 using xbytechat.api.Features.TemplateModule.DTOs;
@@ -12,6 +13,9 @@ public sealed class TemplateDraftService : ITemplateDraftService
 {
     private readonly AppDbContext _db;
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
+    private static readonly Regex KeyAllowed = new("^[a-z0-9_]+$", RegexOptions.Compiled);
+    private static readonly HashSet<string> AllowedCategories =
+        new(StringComparer.OrdinalIgnoreCase) { "UTILITY", "MARKETING", "AUTHENTICATION" };
 
     public TemplateDraftService(AppDbContext db)
     {
@@ -20,8 +24,19 @@ public sealed class TemplateDraftService : ITemplateDraftService
 
     public async Task<TemplateDraft> CreateDraftAsync(Guid businessId, TemplateDraftCreateDto dto, CancellationToken ct = default)
     {
+        if (dto is null) throw new InvalidOperationException("Body required.");
+        if (string.IsNullOrWhiteSpace(dto.Key)) throw new InvalidOperationException("Key is required.");
+        var key = dto.Key.Trim().ToLowerInvariant();
+        if (key.Length > 64) throw new InvalidOperationException("Key is too long (max 64 chars).");
+        if (!KeyAllowed.IsMatch(key))
+            throw new InvalidOperationException("Key must contain only lowercase letters, numbers, and underscores.");
+
+        var category = (dto.Category ?? "UTILITY").Trim().ToUpperInvariant();
+        if (!AllowedCategories.Contains(category))
+            throw new InvalidOperationException("Category must be UTILITY, MARKETING, or AUTHENTICATION.");
+
         var exists = await _db.TemplateDrafts
-            .AnyAsync(x => x.BusinessId == businessId && x.Key == dto.Key, ct);
+            .AnyAsync(x => x.BusinessId == businessId && x.Key == key, ct);
         if (exists)
             throw new InvalidOperationException("A draft with the same Key already exists for this business.");
 
@@ -29,14 +44,64 @@ public sealed class TemplateDraftService : ITemplateDraftService
         {
             Id = Guid.NewGuid(),
             BusinessId = businessId,
-            Key = dto.Key.Trim(),
-            Category = string.IsNullOrWhiteSpace(dto.Category) ? "UTILITY" : dto.Category.Trim().ToUpperInvariant(),
+            Key = key,
+            Category = category,
             DefaultLanguage = string.IsNullOrWhiteSpace(dto.DefaultLanguage) ? "en_US" : dto.DefaultLanguage.Trim(),
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
 
         _db.TemplateDrafts.Add(draft);
+        await _db.SaveChangesAsync(ct);
+        return draft;
+    }
+
+    public async Task<TemplateDraft> UpdateDraftAsync(Guid businessId, Guid draftId, TemplateDraftUpdateDto dto, CancellationToken ct = default)
+    {
+        if (draftId == Guid.Empty) throw new InvalidOperationException("Invalid draftId.");
+        if (dto is null) throw new InvalidOperationException("Body required.");
+
+        var draft = await _db.TemplateDrafts
+            .FirstOrDefaultAsync(x => x.Id == draftId && x.BusinessId == businessId, ct);
+        if (draft is null) throw new KeyNotFoundException("Draft not found for this business.");
+
+        if (dto.Key is not null)
+        {
+            var key = dto.Key.Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(key))
+                throw new InvalidOperationException("Key is required.");
+            if (key.Length > 64)
+                throw new InvalidOperationException("Key is too long (max 64 chars).");
+            if (!KeyAllowed.IsMatch(key))
+                throw new InvalidOperationException("Key must contain only lowercase letters, numbers, and underscores.");
+
+            if (!string.Equals(draft.Key, key, StringComparison.Ordinal))
+            {
+                var exists = await _db.TemplateDrafts
+                    .AnyAsync(x => x.BusinessId == businessId && x.Key == key && x.Id != draft.Id, ct);
+                if (exists)
+                    throw new InvalidOperationException("A draft with the same Key already exists for this business.");
+                draft.Key = key;
+            }
+        }
+
+        if (dto.Category is not null)
+        {
+            var category = dto.Category.Trim().ToUpperInvariant();
+            if (!AllowedCategories.Contains(category))
+                throw new InvalidOperationException("Category must be UTILITY, MARKETING, or AUTHENTICATION.");
+            draft.Category = category;
+        }
+
+        if (dto.DefaultLanguage is not null)
+        {
+            var lang = dto.DefaultLanguage.Trim();
+            if (string.IsNullOrWhiteSpace(lang))
+                throw new InvalidOperationException("DefaultLanguage is required.");
+            draft.DefaultLanguage = lang;
+        }
+
+        draft.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         return draft;
     }
@@ -152,20 +217,39 @@ public sealed class TemplateDraftService : ITemplateDraftService
 
         return (ok, errors);
     }
-
     public Task<TemplateDraft?> GetDraftAsync(Guid businessId, Guid draftId, CancellationToken ct = default)
         => _db.TemplateDrafts.AsNoTracking()
             .FirstOrDefaultAsync(x => x.Id == draftId && x.BusinessId == businessId, ct);
 
-    public async Task<IReadOnlyList<TemplateDraft>> ListDraftsAsync(Guid businessId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<DraftListItemDto>> ListDraftsAsync(Guid businessId, CancellationToken ct = default)
     {
-        var list = await _db.TemplateDrafts.AsNoTracking()
-            .Where(x => x.BusinessId == businessId)
-            .OrderByDescending(x => x.UpdatedAt)
-            .ThenByDescending(x => x.CreatedAt)
-            .ToListAsync(ct);
+        // Exclude drafts that have essentially become "Approved" or "Synced" templates.
+        var submittedTemplateNames = _db.WhatsAppTemplates
+            .Where(t => t.BusinessId == businessId)
+            .Select(t => t.Name)
+            .Distinct();
 
-        return list;
+        // Join Drafts with their Default Variant to get preview content
+        var query = from d in _db.TemplateDrafts.AsNoTracking()
+                    where d.BusinessId == businessId && !submittedTemplateNames.Contains(d.Key)
+                    let v = _db.TemplateDraftVariants.FirstOrDefault(x => x.TemplateDraftId == d.Id && x.Language == d.DefaultLanguage)
+                    orderby d.UpdatedAt descending
+                    select new DraftListItemDto
+                    {
+                        Id = d.Id,
+                        Key = d.Key,
+                        Category = d.Category,
+                        DefaultLanguage = d.DefaultLanguage,
+                        UpdatedAt = d.UpdatedAt,
+                        // Construct simulated components for frontend preview
+                        Components = new List<ComponentItemDto>
+                        {
+                            new ComponentItemDto { Type = "HEADER", Format = v != null ? v.HeaderType : "NONE" },
+                            new ComponentItemDto { Type = "BODY", Text = v != null ? v.BodyText : "" }
+                        }
+                    };
+
+        return await query.ToListAsync(ct);
     }
 
     private static T? SafeDeserialize<T>(string? json)
@@ -242,8 +326,13 @@ public sealed class TemplateDraftService : ITemplateDraftService
         var buttons = SafeDeserialize<List<ButtonDto>>(variant.ButtonsJson) ?? new();
         var examples = SafeDeserialize<Dictionary<string, string>>(variant.ExampleParamsJson) ?? new();
 
-        // Preview: no binary fetch; just mark media header types
+        // Preview: no binary fetch; reuse stored header handle so the UI can show that media is already attached.
         string? headerHandleOrNull = null;
+        if (!string.IsNullOrWhiteSpace(variant.HeaderMediaLocalUrl) &&
+            variant.HeaderMediaLocalUrl.StartsWith("handle:", StringComparison.OrdinalIgnoreCase))
+        {
+            headerHandleOrNull = variant.HeaderMediaLocalUrl.Substring("handle:".Length);
+        }
 
         var (components, examplesPayload) = MetaComponentsBuilder.Build(
             variant.HeaderType,
@@ -296,6 +385,9 @@ public sealed class TemplateDraftService : ITemplateDraftService
         };
     }
 
+
     // Keep your SafeDeserialize helper in this class:
 
 }
+
+

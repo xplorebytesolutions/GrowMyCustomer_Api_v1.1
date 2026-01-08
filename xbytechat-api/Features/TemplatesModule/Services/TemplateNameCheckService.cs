@@ -1,7 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using System.Text.RegularExpressions;
 using xbytechat.api.Features.TemplateModule.DTOs;
 using xbytechat.api.Features.TemplateModule.Models;
-using xbytechat.api.Features.TemplateModule.Utils;
 
 namespace xbytechat.api.Features.TemplateModule.Services;
 
@@ -13,6 +13,7 @@ public interface ITemplateNameCheckService
 public sealed class TemplateNameCheckService : ITemplateNameCheckService
 {
     private readonly AppDbContext _db;
+    private static readonly Regex MetaNameRx = new("^[a-z][a-z0-9_]*$", RegexOptions.Compiled);
 
     public TemplateNameCheckService(AppDbContext db) => _db = db;
 
@@ -26,8 +27,21 @@ public sealed class TemplateNameCheckService : ITemplateNameCheckService
 
         if (draft is null) return null;
 
-        // Compute the Meta template name we use during Submit
-        var baseName = MetaNameHelper.FromKey(draft.Key, businessId, MetaNameHelper.ShortBizSuffix(businessId));
+        // Use the user-entered draft Key as the Meta template name (no suffixes / random chars).
+        var baseName = (draft.Key ?? string.Empty).Trim();
+
+        // If invalid for Meta, treat as unavailable (no auto-suggestions).
+        if (string.IsNullOrWhiteSpace(baseName) || baseName.Length > 25 || !MetaNameRx.IsMatch(baseName))
+        {
+            return new TemplateNameCheckResponse
+            {
+                DraftId = draft.Id,
+                Language = language,
+                Name = baseName,
+                Available = false,
+                Suggestion = null
+            };
+        }
 
         var available = !await ExistsAsync(businessId, baseName, language, ct);
         if (available)
@@ -42,16 +56,13 @@ public sealed class TemplateNameCheckService : ITemplateNameCheckService
             };
         }
 
-        // Find first available suggestion by appending _2, _3, ...
-        var suggestion = await FirstAvailableAsync(businessId, baseName, language, ct);
-
         return new TemplateNameCheckResponse
         {
             DraftId = draft.Id,
             Language = language,
             Name = baseName,
             Available = false,
-            Suggestion = suggestion
+            Suggestion = null
         };
     }
 
@@ -61,17 +72,4 @@ public sealed class TemplateNameCheckService : ITemplateNameCheckService
                         && t.Name == name
                         && t.LanguageCode == language, ct);
 
-    private async Task<string> FirstAvailableAsync(Guid businessId, string baseName, string language, CancellationToken ct)
-    {
-        // avoid unbounded loops; Meta’s name limit is generous, but we keep it sane
-        for (int i = 2; i <= 1000; i++)
-        {
-            var candidate = $"{baseName}_{i}";
-            var exists = await ExistsAsync(businessId, candidate, language, ct);
-            if (!exists)
-                return candidate;
-        }
-        // fallback: add random short suffix
-        return $"{baseName}_{Guid.NewGuid():N}".Substring(0, Math.Min(baseName.Length + 9, 50));
-    }
 }

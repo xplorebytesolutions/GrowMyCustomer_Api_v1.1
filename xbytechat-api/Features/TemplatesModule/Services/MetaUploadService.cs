@@ -18,15 +18,18 @@ public sealed class MetaUploadService : IMetaUploadService
     private readonly IHttpClientFactory _httpFactory;
     private readonly IMetaCredentialsResolver _creds;
     private readonly UploadLimitsOptions _opts;
+    private readonly ILogger<MetaUploadService> _logger;
 
     public MetaUploadService(
         IHttpClientFactory httpFactory,
         IMetaCredentialsResolver creds,
-        IOptions<UploadLimitsOptions> opts)
+        IOptions<UploadLimitsOptions> opts,
+        ILogger<MetaUploadService> logger)
     {
         _httpFactory = httpFactory;
         _creds = creds;
         _opts = opts.Value;
+        _logger = logger;
     }
 
     public async Task<HeaderUploadResult> UploadHeaderAsync(
@@ -127,26 +130,66 @@ public sealed class MetaUploadService : IMetaUploadService
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", c.AccessToken);
 
         // Meta expects IMAGE|VIDEO|DOCUMENT
-        string fileTypeParam = mediaType switch
+        // Meta expects the MIME type (e.g. "image/jpeg"), NOT just "IMAGE".
+        string fileTypeParam = mime;
+
+        _logger.LogInformation("Starting Meta Upload. WABA: {WabaId}, Type: {Type}, Mime: {Mime}, Size: {Size}", 
+             c.WabaId, mediaType, mime, size);
+
+        // ── Path C: Classic (Numeric ID) - HIGH PRIORITY ─────────────────────────
+        try 
         {
-            HeaderMediaType.IMAGE => "IMAGE",
-            HeaderMediaType.VIDEO => "VIDEO",
-            HeaderMediaType.DOCUMENT => "DOCUMENT",
-            _ => "DOCUMENT"
-        };
+             var targetId = !string.IsNullOrWhiteSpace(c.PhoneNumberId) ? c.PhoneNumberId : c.WabaId;
+             var handleC = await TryPathC_ClassicMediaEndpointAsync(client, targetId!, new NonDisposableStream(content), fileName, mime, size, ct);
+             if (!string.IsNullOrWhiteSpace(handleC))
+             {
+                 _logger.LogInformation("Path C (Classic) succeeded provided ID: {Handle}", handleC);
+                 return new HeaderUploadResult(handleC!, mime, size, false);
+             }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Path C (Classic) failed. Falling back to Resumable.");
+        }
 
         // Path A: uploads session
-        var handle = await TryPathA_UploadsEndpointAsync(client, c.WabaId, fileTypeParam, content, fileName, mime, size, ct);
+        // Primary method for Templates.
+        // Returns a handle (4::...) OR a resolved numeric ID if possible.
+        var handle = await TryPathA_UploadsEndpointAsync(client, c.WabaId, fileTypeParam, new NonDisposableStream(content), fileName, mime, size, ct);
         if (!string.IsNullOrWhiteSpace(handle))
+        {
             return new HeaderUploadResult(handle!, mime, size, false);
+        }
 
-        // Rewind before fallback (Path A already consumed the stream)
-        try { content.Position = 0; } catch { /* ignore */ }
+        // Rewind
+        try { content.Position = 0; } catch { }
 
-        // Path B: phased upload
+        // Path B: Phased (Fallback)
+        var handleB = await TryPathB_PhasedUploadAsync(client, c.WabaId, fileTypeParam, new NonDisposableStream(content), fileName, mime, size, ct);
+        if (!string.IsNullOrWhiteSpace(handleB))
+             return new HeaderUploadResult(handleB!, mime, size, false);
+             
+        // Path C: Classic (Numeric ID) - Low Priority / Fallback
+        // The numeric ID returned by this path is currently REJECTED by Template API.
+        // We keep it as a last resort or if future API versions accept it.
+        try 
+        {
+             var targetId = !string.IsNullOrWhiteSpace(c.PhoneNumberId) ? c.PhoneNumberId : c.WabaId;
+             var handleC = await TryPathC_ClassicMediaEndpointAsync(client, targetId!, new NonDisposableStream(content), fileName, mime, size, ct);
+             if (!string.IsNullOrWhiteSpace(handleC))
+                return new HeaderUploadResult(handleC!, mime, size, false);
+        }
+        catch (Exception ex)
+        {
+             _logger.LogWarning(ex, "Meta Upload Path C (Classic) failed.");
+        }
+
+        // Path B Retry (just in case flow falls here unexpectedly)
         handle = await TryPathB_PhasedUploadAsync(client, c.WabaId, fileTypeParam, content, fileName, mime, size, ct);
         if (!string.IsNullOrWhiteSpace(handle))
+        {
             return new HeaderUploadResult(handle!, mime, size, false);
+        }
 
         throw new InvalidOperationException("Meta upload did not return an asset handle. Check app permissions and the response logs.");
     }
@@ -163,21 +206,39 @@ public sealed class MetaUploadService : IMetaUploadService
         CancellationToken ct)
     {
         // INIT
+        // Params must be in URL query string for app/uploads AND Body to be safe.
+        // We ensure messaging_product=whatsapp is present in both.
+        
+        var safeFileName = (fileName ?? "upload.bin").Replace(" ", "_");
+        // Body (FormUrlEncoded)
         var initPayload = new Dictionary<string, string>
         {
+            ["file_name"] = safeFileName,
+            ["file_length"] = size.ToString(),
             ["file_type"] = fileTypeParam,
-            ["file_length"] = size.ToString()
+            ["messaging_product"] = "whatsapp"
         };
-        using var initResp = await client.PostAsync($"{wabaId}/uploads", new FormUrlEncodedContent(initPayload), ct);
+        
+        // Query String (Extra safety for scoping)
+        // Note: app/uploads sometimes ignores body for init, so query string is crucial.
+        var initUrl = $"{client.BaseAddress}app/uploads?messaging_product=whatsapp";
+        
+        using var initResp = await client.PostAsync(initUrl, new FormUrlEncodedContent(initPayload), ct);
         var initText = await initResp.Content.ReadAsStringAsync(ct);
-        if (!initResp.IsSuccessStatusCode) return null;
+        
+        if (!initResp.IsSuccessStatusCode)
+        {
+             _logger.LogWarning("Meta Upload Path A (Init) Failed. Status: {Status}, Body: {Body}", initResp.StatusCode, initText);
+             return null;
+        }
 
         var initJson = SafeParse(initText);
         var uploadId = initJson.TryGetValue("id", out var idObj) ? idObj?.ToString() : null;
         if (string.IsNullOrWhiteSpace(uploadId)) return null;
 
         // TRANSFER (single range)
-        using (var req = new HttpRequestMessage(HttpMethod.Post, uploadId))
+        // Use absolute URI to prevent "scheme not supported" error on "upload:xxx"
+        using (var req = new HttpRequestMessage(HttpMethod.Post, $"{client.BaseAddress}{uploadId}"))
         {
             req.Content = new StreamContent(content);
             req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
@@ -186,17 +247,30 @@ public sealed class MetaUploadService : IMetaUploadService
 
             using var upResp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
             var upText = await upResp.Content.ReadAsStringAsync(ct);
-            if (!upResp.IsSuccessStatusCode) return null;
+            if (!upResp.IsSuccessStatusCode)
+            {
+                 _logger.LogWarning("Meta Upload Path A (Transfer) Failed. Status: {Status}, Body: {Body}", upResp.StatusCode, upText);
+                 return null;
+            }
         }
 
         // FINISH
         var finPayload = new Dictionary<string, string> { ["finish"] = "true" };
-        using var finResp = await client.PostAsync(uploadId, new FormUrlEncodedContent(finPayload), ct);
+        using var finResp = await client.PostAsync($"{client.BaseAddress}{uploadId}", new FormUrlEncodedContent(finPayload), ct);
         var finText = await finResp.Content.ReadAsStringAsync(ct);
-        if (!finResp.IsSuccessStatusCode) return null;
+        
+        if (!finResp.IsSuccessStatusCode)
+        {
+             _logger.LogWarning("Meta Upload Path A (Finish) Failed. Status: {Status}, Body: {Body}", finResp.StatusCode, finText);
+             return null;
+        }
+
+        // Log success body to debug handle extraction
+        _logger.LogInformation("Meta Upload Path A (Finish) Success. Body: {Body}", finText);
 
         var finJson = SafeParse(finText);
-        if (TryExtractHandle(finJson, out var handle)) return handle;
+        if (TryExtractHandle(finJson, out var handle))
+            return handle;
 
         return null;
     }
@@ -217,18 +291,25 @@ public sealed class MetaUploadService : IMetaUploadService
         {
             ["upload_phase"] = "start",
             ["file_type"] = fileTypeParam,
-            ["file_length"] = size.ToString()
+            ["file_length"] = size.ToString(),
+            ["messaging_product"] = "whatsapp"
         };
-        using var startResp = await client.PostAsync($"{wabaId}/uploads", new FormUrlEncodedContent(startPayload), ct);
+        using var startResp = await client.PostAsync("app/uploads", new FormUrlEncodedContent(startPayload), ct);
         var startText = await startResp.Content.ReadAsStringAsync(ct);
-        if (!startResp.IsSuccessStatusCode) return null;
+        
+        if (!startResp.IsSuccessStatusCode)
+        {
+             _logger.LogWarning("Meta Upload Path B (Start) Failed. Status: {Status}, Body: {Body}", startResp.StatusCode, startText);
+             return null;
+        }
 
         var startJson = SafeParse(startText);
         var sessionId = startJson.TryGetValue("id", out var idObj) ? idObj?.ToString() : null;
         if (string.IsNullOrWhiteSpace(sessionId)) return null;
 
         // TRANSFER
-        using (var req = new HttpRequestMessage(HttpMethod.Post, $"{sessionId}?upload_phase=transfer"))
+        var transferSep = sessionId.Contains('?') ? "&" : "?";
+        using (var req = new HttpRequestMessage(HttpMethod.Post, $"{client.BaseAddress}{sessionId}{transferSep}upload_phase=transfer"))
         {
             req.Content = new StreamContent(content);
             req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
@@ -237,20 +318,34 @@ public sealed class MetaUploadService : IMetaUploadService
 
             using var transferResp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
             var transferText = await transferResp.Content.ReadAsStringAsync(ct);
-            if (!transferResp.IsSuccessStatusCode) return null;
+            if (!transferResp.IsSuccessStatusCode)
+            {
+                 _logger.LogWarning("Meta Upload Path B (Transfer) Failed. Status: {Status}, Body: {Body}", transferResp.StatusCode, transferText);
+                 return null;
+            }
         }
 
         // FINISH
-        using (var req = new HttpRequestMessage(HttpMethod.Post, $"{sessionId}?upload_phase=finish"))
+        var finishSep = sessionId.Contains('?') ? "&" : "?";
+        using (var req = new HttpRequestMessage(HttpMethod.Post, $"{client.BaseAddress}{sessionId}{finishSep}upload_phase=finish"))
         {
             req.Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["confirm"] = "true" });
 
             using var finishResp = await client.SendAsync(req, ct);
             var finishText = await finishResp.Content.ReadAsStringAsync(ct);
-            if (!finishResp.IsSuccessStatusCode) return null;
+            
+            if (!finishResp.IsSuccessStatusCode)
+            {
+                 _logger.LogWarning("Meta Upload Path B (Finish) Failed. Status: {Status}, Body: {Body}", finishResp.StatusCode, finishText);
+                 return null;
+            }
+
+            // Log success body to debug handle extraction
+            _logger.LogInformation("Meta Upload Path B (Finish) Success. Body: {Body}", finishText);
 
             var finJson = SafeParse(finishText);
-            if (TryExtractHandle(finJson, out var handle)) return handle;
+            if (TryExtractHandle(finJson, out var handle))
+                return handle;
         }
 
         return null;
@@ -273,48 +368,160 @@ public sealed class MetaUploadService : IMetaUploadService
     private static bool TryExtractHandle(Dictionary<string, object?> json, out string? handle)
     {
         handle = null;
+        if (json == null) return false;
 
-        if (json.TryGetValue("h", out var h) && !string.IsNullOrWhiteSpace(h?.ToString()))
-        {
-            handle = h!.ToString();
-            return true;
-        }
+        // Keys to check in order of preference
+        // Removed "id" because it's usually the session ID, not the asset handle.
+        var keys = new[] { "h", "handle", "asset_handle" };
 
-        if (json.TryGetValue("handle", out var hh) && !string.IsNullOrWhiteSpace(hh?.ToString()))
+        foreach (var key in keys)
         {
-            handle = hh!.ToString();
-            return true;
-        }
-
-        if (json.TryGetValue("asset_handle", out var ah) && !string.IsNullOrWhiteSpace(ah?.ToString()))
-        {
-            handle = ah!.ToString();
-            return true;
-        }
-
-        // sometimes nested { "result": { "h": "4::..." } }
-        if (json.TryGetValue("result", out var resObj) &&
-            resObj is JsonElement el &&
-            el.ValueKind == JsonValueKind.Object)
-        {
-            if (el.TryGetProperty("h", out var h2) && h2.ValueKind == JsonValueKind.String)
+            if (json.TryGetValue(key, out var val) && val is not null)
             {
-                handle = h2.GetString();
-                return true;
+                var s = val.ToString();
+                // If it's a JsonElement, GetString() is safer/cleaner than ToString()
+                if (val is JsonElement el)
+                {
+                    if (el.ValueKind == JsonValueKind.String)
+                        s = el.GetString();
+                    else 
+                        s = el.ToString(); 
+                }
+
+                if (!string.IsNullOrWhiteSpace(s))
+                {
+                    handle = s;
+                    return true;
+                }
             }
-            if (el.TryGetProperty("handle", out var h3) && h3.ValueKind == JsonValueKind.String)
+        }
+
+        // nested { "result": ... }
+        if (json.TryGetValue("result", out var resObj) && resObj is JsonElement resEl && resEl.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var key in keys)
             {
-                handle = h3.GetString();
-                return true;
-            }
-            if (el.TryGetProperty("asset_handle", out var h4) && h4.ValueKind == JsonValueKind.String)
-            {
-                handle = h4.GetString();
-                return true;
+                if (resEl.TryGetProperty(key, out var prop))
+                {
+                     var s = prop.ValueKind == JsonValueKind.String ? prop.GetString() : prop.ToString();
+                     if (!string.IsNullOrWhiteSpace(s))
+                     {
+                         handle = s;
+                         return true;
+                     }
+                }
             }
         }
 
         return false;
+    }
+
+    // ── Path C: Classic Media Endpoint (POST /<targetId>/media) ────────────────
+    private async Task<string?> TryPathC_ClassicMediaEndpointAsync(
+        HttpClient client,
+        string targetId,
+        Stream content,
+        string fileName,
+        string mime,
+        long size,
+        CancellationToken ct)
+    {
+        // 25MB limit hard check (though server might reject earlier)
+        // If > 25MB, skip immediately to fallback to resumable
+        if (size > 25 * 1024 * 1024) return null;
+
+        using var form = new MultipartFormDataContent(); 
+        
+        // Correct field: messaging_product="whatsapp"
+        // We need to be careful with MultipartFormDataContent.Add(content, name, fileName)
+        
+        var mp = new MultipartFormDataContent();
+        mp.Add(new StringContent("whatsapp"), "messaging_product");
+        
+        var fileContent = new StreamContent(content);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue(mime);
+        mp.Add(fileContent, "file", fileName);
+
+        using var resp = await client.PostAsync($"{targetId}/media", mp, ct);
+        var text = await resp.Content.ReadAsStringAsync(ct);
+
+        if (!resp.IsSuccessStatusCode)
+        {
+             _logger.LogWarning("Meta Upload Path C (Classic) Failed. Status: {Status}, Body: {Body}", resp.StatusCode, text);
+             return null;
+        }
+
+        _logger.LogInformation("Meta Upload Path C (Classic) Success. Body: {Body}", text);
+        var json = SafeParse(text);
+
+        // Classic endpoint returns { "id": "1234..." }
+        if (json.TryGetValue("id", out var val) && val is not null)
+        {
+             return val.ToString();
+        }
+
+        return null;
+    }
+
+    // ── Resolve Handle (GET handle -> ID) ───────────────────────────────────────
+    // ── Resolve Media ID (Handle or Session -> ID) ──────────────────────────────
+    private async Task<string> ResolveMediaIdAsync(HttpClient client, string handle, string? sessionId, CancellationToken ct)
+    {
+        // Strategy 1: GET {handle}
+        try
+        {
+            // Handle might contain chars that need encoding for URL path?
+            // "4:..." usually safe, but let's be sure.
+            // Actually, HttpClient doesn't like encoded colons in path sometimes.
+            // But 4:: is weird. Let's try direct first.
+            
+            var reqUrl = handle;
+            // If handle contains crazy chars, Uri creation might fail.
+            // Let's try just GET.
+            
+            var resp = await client.GetAsync(reqUrl, ct);
+            if (resp.IsSuccessStatusCode)
+            {
+                var jsonText = await resp.Content.ReadAsStringAsync(ct);
+                _logger.LogInformation("Resolve(Handle) Success: {Handle} -> {Body}", handle, jsonText);
+                var json = SafeParse(jsonText);
+                if (json.TryGetValue("id", out var val) && val is not null) return val.ToString()!;
+            }
+            else
+            {
+                 _logger.LogWarning("Resolve(Handle) Failed: {Handle} Status: {Status}", handle, resp.StatusCode);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Resolve(Handle) Exception: {Handle}", handle);
+        }
+
+        // Strategy 2: If sessionId provided, GET {sessionId}?fields=id,h
+        if (!string.IsNullOrWhiteSpace(sessionId))
+        {
+            try
+            {
+                var resp = await client.GetAsync($"{sessionId}?fields=id,handle,status", ct);
+                if (resp.IsSuccessStatusCode)
+                {
+                    var jsonText = await resp.Content.ReadAsStringAsync(ct);
+                    _logger.LogInformation("Resolve(Session) Success: {SessionId} -> {Body}", sessionId, jsonText);
+                    var json = SafeParse(jsonText);
+                    if (json.TryGetValue("id", out var val) && val is not null) return val.ToString()!;
+                }
+                else
+                {
+                     _logger.LogWarning("Resolve(Session) Failed: {SessionId} Status: {Status}", sessionId, resp.StatusCode);
+                }
+            }
+             catch (Exception ex)
+            {
+                _logger.LogError(ex, "Resolve(Session) Exception: {SessionId}", sessionId);
+            }
+        }
+
+        return handle;
     }
 
     // ── MIME guessing ───────────────────────────────────────────────────────────
@@ -342,5 +549,24 @@ public sealed class MetaUploadService : IMetaUploadService
             };
 
         return "application/octet-stream";
+    }
+    // ── Stream Wrapper to prevent disposal ─────────────────────────────────────
+    private class NonDisposableStream : Stream
+    {
+        private readonly Stream _inner;
+        public NonDisposableStream(Stream inner) => _inner = inner;
+        public override bool CanRead => _inner.CanRead;
+        public override bool CanSeek => _inner.CanSeek;
+        public override bool CanWrite => _inner.CanWrite;
+        public override long Length => _inner.Length;
+        public override long Position { get => _inner.Position; set => _inner.Position = value; }
+        public override void Flush() => _inner.Flush();
+        public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+        public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
+        public override void SetLength(long value) => _inner.SetLength(value);
+        public override void Write(byte[] buffer, int offset, int count) => _inner.Write(buffer, offset, count);
+        
+        // Key: Do NOT dispose the inner stream
+        protected override void Dispose(bool disposing) { /* no-op */ }
     }
 }

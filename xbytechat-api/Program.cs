@@ -928,6 +928,9 @@ app.MapControllers()
 
 //app.MapHub<InboxHub>("/hubs/inbox");
 app.MapHub<InboxHub>("/api/hubs/inbox");
+// Seed global template library
+await TemplateLibrarySeeder.SeedAsync(app.Services);
+
 app.Run();
 #endregion
 

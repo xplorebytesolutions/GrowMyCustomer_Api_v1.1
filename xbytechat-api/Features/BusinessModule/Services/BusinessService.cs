@@ -126,6 +126,7 @@ namespace xbytechat.api.Features.BusinessModule.Services
             if (existing != null)
                 return ResponseResult.ErrorInfo("❌ Email already exists");
 
+            var basicPlanId = Guid.Parse("5f9f5de1-a0b2-48ba-b03d-77b27345613f");
             var business = new Business
             {
                 Id = Guid.NewGuid(),
@@ -140,7 +141,7 @@ namespace xbytechat.api.Features.BusinessModule.Services
                 CreatedAt = DateTime.UtcNow,
 
                 // ❌ IMPORTANT: no plan yet at signup
-                PlanId = null,              // if Guid?  (or just omit setting it)
+                PlanId = basicPlanId,              // if Guid?  (or just omit setting it)
                                             // BusinessPlanInfo = null   // will be created at plan-selection time
             };
 
