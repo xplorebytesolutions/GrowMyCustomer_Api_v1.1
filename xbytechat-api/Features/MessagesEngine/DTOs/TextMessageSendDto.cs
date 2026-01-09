@@ -10,6 +10,9 @@ namespace xbytechat.api.Features.MessagesEngine.DTOs
 
         public string TextContent { get; set; }
 
+        // Optional: allows UI to provide a preferred contact name when saving a new contact.
+        public string? ContactName { get; set; }
+
         public Guid ContactId { get; set; }
 
         public string? PhoneNumberId { get; set; }

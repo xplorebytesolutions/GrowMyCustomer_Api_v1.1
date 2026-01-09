@@ -2,6 +2,7 @@
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using xbytechat.api.Helpers;
 using xbytechat.api.Features.CRM.Models;
 
 namespace xbytechat.api.Features.CRM.Services
@@ -21,15 +22,17 @@ namespace xbytechat.api.Features.CRM.Services
             if (businessId == Guid.Empty || string.IsNullOrWhiteSpace(phoneE164) || string.IsNullOrWhiteSpace(profileName))
                 return;
 
-            static string Digits(string s) => new string(s.Where(char.IsDigit).ToArray());
-            var phoneDigits = Digits(phoneE164);
+            var phoneDigits = PhoneNumberNormalizer.NormalizeToE164Digits(phoneE164, "IN");
+            if (string.IsNullOrWhiteSpace(phoneDigits))
+                return;
+
             var newName = profileName.Trim();
             var now = DateTime.UtcNow;
 
-            // Try digits first; fall back to raw (handles legacy rows)
+            // Canonical lookup: digits-only E.164 (no '+')
             var contact = await _db.Contacts.FirstOrDefaultAsync(
                 c => c.BusinessId == businessId &&
-                     (c.PhoneNumber == phoneDigits || c.PhoneNumber == phoneE164),
+                     c.PhoneNumber == phoneDigits,
                 ct);
 
             if (contact == null)

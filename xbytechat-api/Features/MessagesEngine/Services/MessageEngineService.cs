@@ -748,22 +748,47 @@ namespace xbytechat.api.Features.MessagesEngine.Services
 
                 // Contact upsert/touch
                 Guid? contactId = null;
+
+                var recipientRaw = (dto.RecipientNumber ?? string.Empty).Trim();
+                var recipientDigits = PhoneNumberNormalizer.NormalizeToE164Digits(recipientRaw, "IN");
+                if (string.IsNullOrWhiteSpace(recipientDigits))
+                    return ResponseResult.ErrorInfo("? Invalid recipient number.", $"Invalid/unsupported phone: '{recipientRaw}'");
+
+                // Canonical lookup: digits-only E.164 (no '+')
                 var contact = await _db.Contacts.FirstOrDefaultAsync(c =>
-                    c.BusinessId == businessId && c.PhoneNumber == dto.RecipientNumber);
+                    c.BusinessId == businessId &&
+                    c.PhoneNumber == recipientDigits);
 
                 if (contact != null)
                 {
                     contactId = contact.Id;
                     contact.LastContactedAt = DateTime.UtcNow;
+
+                    // If caller wants to save and provided a better name, backfill placeholders only.
+                    if (dto.IsSaveContact && !string.IsNullOrWhiteSpace(dto.ContactName))
+                    {
+                        var preferredName = dto.ContactName.Trim();
+                        if (!string.IsNullOrWhiteSpace(preferredName) &&
+                            (string.IsNullOrWhiteSpace(contact.Name) ||
+                             contact.Name == "WhatsApp User" ||
+                             contact.Name == contact.PhoneNumber))
+                        {
+                            contact.Name = preferredName;
+                        }
+                    }
                 }
                 else if (dto.IsSaveContact)
                 {
+                    var preferredName = string.IsNullOrWhiteSpace(dto.ContactName)
+                        ? null
+                        : dto.ContactName.Trim();
+
                     contact = new Contact
                     {
                         Id = Guid.NewGuid(),
                         BusinessId = businessId,
-                        Name = "WhatsApp User",
-                        PhoneNumber = dto.RecipientNumber,
+                        Name = preferredName ?? "WhatsApp User",
+                        PhoneNumber = recipientDigits,
                         CreatedAt = DateTime.UtcNow,
                         LastContactedAt = DateTime.UtcNow
                     };
@@ -777,7 +802,7 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 var sendResult = await SendViaProviderAsync(
                     businessId,
                     providerUpper!,
-                    p => p.SendTextAsync(dto.RecipientNumber, dto.TextContent),
+                    p => p.SendTextAsync(recipientDigits, dto.TextContent),
                     phoneNumberId
                 );
 
@@ -808,7 +833,7 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 {
                     Id = Guid.NewGuid(),
                     BusinessId = businessId,
-                    RecipientNumber = dto.RecipientNumber,
+                    RecipientNumber = recipientDigits,
                     MessageContent = dto.TextContent,
                     RenderedBody = dto.TextContent,
                     ContactId = contactId,
