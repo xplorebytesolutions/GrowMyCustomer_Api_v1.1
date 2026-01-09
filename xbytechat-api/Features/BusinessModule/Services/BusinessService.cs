@@ -302,18 +302,36 @@ namespace xbytechat.api.Features.BusinessModule.Services
         }
 
 
-        public async Task<List<PendingBusinessDto>> GetPendingBusinessesAsync(string role, string userId)
+        public async Task<List<PendingBusinessDto>> GetPendingBusinessesAsync(string role, string userId, string? status = null)
         {
             try
             {
                 var roleLc = (role ?? "").ToLowerInvariant();
 
-                // base: pending + not deleted
+                // base: not deleted
                 IQueryable<Business> q = _businessRepo.AsQueryable()
                     .AsNoTracking()
-                    .Include(b => b.BusinessPlanInfo)   // ✅ load enum Plan from BusinessPlanInfo
-                                                        // .Include(b => b.Plan)            // ← only if you have a Plan navigation property
-                    .Where(b => b.Status == Business.StatusType.Pending && !b.IsDeleted);
+                    .Include(b => b.BusinessPlanInfo)
+                    .Where(b => !b.IsDeleted);
+
+                // Filtering by status
+                if (!string.IsNullOrEmpty(status))
+                {
+                    var statusLc = status.ToLowerInvariant();
+                    if (statusLc == "pending")
+                        q = q.Where(b => b.Status == Business.StatusType.Pending);
+                    else if (statusLc == "rejected" || statusLc == "reject")
+                        q = q.Where(b => b.Status == Business.StatusType.Rejected);
+                    else if (statusLc == "hold" || statusLc == "on-hold" || statusLc == "on_hold")
+                        q = q.Where(b => b.Status == Business.StatusType.Hold);
+                    else if (statusLc == "approved")
+                        q = q.Where(b => b.Status == Business.StatusType.Approved);
+                }
+                else
+                {
+                    // Default to Pending if no status filter provided
+                    q = q.Where(b => b.Status == Business.StatusType.Pending);
+                }
 
                 // scope for partner
                 if (roleLc == "partner")
@@ -328,7 +346,7 @@ namespace xbytechat.api.Features.BusinessModule.Services
 
                 var items = await q.OrderByDescending(b => b.CreatedAt).ToListAsync();
 
-                // Map to your existing DTO; with Include() the enum will be present
+                // Map to your existing DTO
                 return items.Select(b => new PendingBusinessDto
                 {
                     BusinessId = b.Id,
@@ -336,10 +354,11 @@ namespace xbytechat.api.Features.BusinessModule.Services
                     BusinessEmail = b.BusinessEmail ?? "",
                     RepresentativeName = b.RepresentativeName ?? "",
                     Phone = b.Phone ?? "",
-                    // Shows "Basic" etc. because BusinessPlanInfo is now loaded
                     Plan = b.BusinessPlanInfo?.Plan.ToString() ?? "Unknown",
                     CreatedAt = b.CreatedAt,
-                    IsApproved = b.IsApproved
+                    IsApproved = b.IsApproved,
+                    Status = b.Status.ToString(),
+                    ApprovedAt = b.ApprovedAt
                 }).ToList();
             }
             catch
@@ -426,8 +445,9 @@ namespace xbytechat.api.Features.BusinessModule.Services
                 return ResponseResult.ErrorInfo("❌ Business not found");
 
             business.Status = Business.StatusType.Rejected;
-            business.IsDeleted = true;
-            business.DeletedAt = DateTime.UtcNow;
+            business.IsApproved = false;
+            // business.IsDeleted = true; // removed soft-delete to allow showing in Rejected tab
+            business.DeletedAt = null;
 
             _businessRepo.Update(business);
             await _businessRepo.SaveAsync();
@@ -454,7 +474,7 @@ namespace xbytechat.api.Features.BusinessModule.Services
                 return ResponseResult.ErrorInfo("❌ Business not found");
 
             business.IsApproved = false;
-            business.Status = Business.StatusType.Pending;
+            business.Status = Business.StatusType.Hold;
 
             _businessRepo.Update(business);
             await _businessRepo.SaveAsync();
@@ -518,6 +538,54 @@ namespace xbytechat.api.Features.BusinessModule.Services
                .OrderBy(b => b.CompanyName)
                .ToListAsync();
         }
+        public async Task<ResponseResult> HardDeleteBusinessAsync(Guid businessId)
+        {
+            try
+            {
+                var business = await _businessRepo.AsQueryable()
+                    .Include(b => b.Users)
+                    .Include(b => b.BusinessPlanInfo)
+                    .FirstOrDefaultAsync(b => b.Id == businessId);
+
+                if (business == null)
+                    return ResponseResult.ErrorInfo("❌ Business not found");
+
+                // Audit log before deletion
+                await _auditLogService.SaveLogAsync(new AuditLog
+                {
+                    BusinessId = business.Id,
+                    ActionType = "business.hard_deleted",
+                    Description = $"Business permanently deleted: {business.CompanyName}",
+                    IPAddress = _httpContextAccessor.HttpContext?.Connection?.RemoteIpAddress?.ToString(),
+                    UserAgent = _httpContextAccessor.HttpContext?.Request?.Headers["User-Agent"].ToString()
+                });
+
+                // Remove related users first
+                if (business.Users != null && business.Users.Any())
+                {
+                    foreach (var user in business.Users.ToList())
+                    {
+                        _userRepo.Delete(user);
+                    }
+                    await _userRepo.SaveAsync();
+                }
+
+                if (business.BusinessPlanInfo != null)
+                {
+                    _db.BusinessPlanInfos.Remove(business.BusinessPlanInfo);
+                }
+
+                _businessRepo.Delete(business);
+                await _businessRepo.SaveAsync();
+
+                return ResponseResult.SuccessInfo("🗑️ Business permanently deleted");
+            }
+            catch (Exception ex)
+            {
+                return ResponseResult.ErrorInfo("❌ Failed to delete business: " + ex.Message);
+            }
+        }
+
         public IQueryable<Business> Query()
         {
             return _businessRepo.AsQueryable();

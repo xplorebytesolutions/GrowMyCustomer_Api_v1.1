@@ -24,7 +24,7 @@ namespace xbytechat.api.Features.BusinessModule.Controllers
 
         [HttpGet("pending")]
         [Authorize(Roles = "admin,superadmin,partner")] // partners see scoped; admin/superadmin see ALL
-        public async Task<IActionResult> GetPendingBusinesses()
+        public async Task<IActionResult> GetPendingBusinesses([FromQuery] string? status = null)
         {
             try
             {
@@ -39,7 +39,7 @@ namespace xbytechat.api.Features.BusinessModule.Controllers
                            ?? User.FindFirst("sub")?.Value
                            ?? "";
 
-                var result = await _businessService.GetPendingBusinessesAsync(role, userId);
+                var result = await _businessService.GetPendingBusinessesAsync(role, userId, status);
                 return Ok(ResponseResult.SuccessInfo("✅ Pending businesses fetched successfully.", result));
             }
             catch
@@ -168,6 +168,21 @@ namespace xbytechat.api.Features.BusinessModule.Controllers
         {
             var result = await _businessService.GetApprovedBusinessesAsync();
             return Ok(result);
+        }
+
+        [HttpDelete("{id}")]
+        [Authorize(Roles = "superadmin,admin")]
+        public async Task<IActionResult> Delete(Guid id)
+        {
+            try
+            {
+                var result = await _businessService.HardDeleteBusinessAsync(id);
+                return result.Success ? Ok(result) : BadRequest(result);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, ResponseResult.ErrorInfo("❌ Failed to delete business. " + ex.Message));
+            }
         }
 
     }

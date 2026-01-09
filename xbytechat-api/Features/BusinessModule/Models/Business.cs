@@ -31,7 +31,7 @@ namespace xbytechat.api.Features.BusinessModule.Models
         // 📦 SaaS Plan & Status using Enums
         // public enum PlanType { Basic, Smart, Advanced } -- moved to bisinessinfo
         // public PlanType Plan { get; set; } = PlanType.Basic;  // moved to bisinessinfo
-        public enum StatusType { Pending, Approved, Rejected }
+        public enum StatusType { Pending, Approved, Rejected, Hold }
         public StatusType Status { get; set; } = StatusType.Pending;  // Default to Pending
 
         // 📝 Metadata
