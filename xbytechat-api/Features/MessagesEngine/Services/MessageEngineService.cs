@@ -902,6 +902,418 @@ namespace xbytechat.api.Features.MessagesEngine.Services
             }
         }
 
+        public Task<ResponseResult> SendImageDirectAsync(MediaMessageSendDto dto)
+            => SendMediaDirectAsync(dto, mediaType: "image");
+
+        public Task<ResponseResult> SendDocumentDirectAsync(MediaMessageSendDto dto)
+            => SendMediaDirectAsync(dto, mediaType: "document");
+
+        public Task<ResponseResult> SendVideoDirectAsync(MediaMessageSendDto dto)
+            => SendMediaDirectAsync(dto, mediaType: "video");
+
+        public Task<ResponseResult> SendAudioDirectAsync(MediaMessageSendDto dto)
+            => SendMediaDirectAsync(dto, mediaType: "audio");
+
+        private async Task<ResponseResult> SendMediaDirectAsync(MediaMessageSendDto dto, string mediaType)
+        {
+            try
+            {
+                var businessId = _httpContextAccessor.HttpContext?.User?.GetBusinessId()
+                    ?? throw new UnauthorizedAccessException("? Cannot resolve BusinessId from context.");
+
+                if (dto == null) throw new ArgumentNullException(nameof(dto));
+
+                var type = (mediaType ?? string.Empty).Trim().ToLowerInvariant();
+                if (type is not ("image" or "document" or "video" or "audio"))
+                    return ResponseResult.ErrorInfo("? Invalid media type.", "Media type must be 'image', 'document', 'video', or 'audio'.");
+
+                var recipientRaw = (dto.RecipientNumber ?? string.Empty).Trim();
+                var recipientDigits = PhoneNumberNormalizer.NormalizeToE164Digits(recipientRaw, "IN");
+                if (string.IsNullOrWhiteSpace(recipientDigits))
+                    return ResponseResult.ErrorInfo("? Invalid recipient number.", $"Invalid/unsupported phone: '{recipientRaw}'");
+
+                var mediaId = (dto.MediaId ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(mediaId))
+                    return ResponseResult.ErrorInfo("? Missing media id.", "mediaId is required.");
+
+                // Normalize provider + resolve phone_number_id similarly to SendTextDirectAsync
+                string? providerUpper = string.IsNullOrWhiteSpace(dto.Provider)
+                    ? null
+                    : dto.Provider!.Trim().ToUpperInvariant();
+                string? providerKey = providerUpper?.ToLowerInvariant();
+                string? phoneNumberId = string.IsNullOrWhiteSpace(dto.PhoneNumberId) ? null : dto.PhoneNumberId!.Trim();
+
+                if (string.IsNullOrWhiteSpace(providerUpper))
+                {
+                    var defaultPhone = await _db.WhatsAppPhoneNumbers
+                        .AsNoTracking()
+                        .Where(n => n.BusinessId == businessId && n.IsActive)
+                        .OrderByDescending(n => n.IsDefault)
+                        .ThenByDescending(n => n.UpdatedAt ?? n.CreatedAt)
+                        .Select(n => new { n.Provider, n.PhoneNumberId })
+                        .FirstOrDefaultAsync();
+
+                    if (defaultPhone == null)
+                    {
+                        var anySetting = await _db.WhatsAppSettings
+                            .AsNoTracking()
+                            .Where(s => s.BusinessId == businessId && s.IsActive)
+                            .OrderByDescending(s => s.UpdatedAt ?? s.CreatedAt)
+                            .Select(s => s.Provider)
+                            .FirstOrDefaultAsync();
+
+                        if (string.IsNullOrWhiteSpace(anySetting))
+                            return ResponseResult.ErrorInfo("? WhatsApp configuration not found (no active numbers or settings).");
+
+                        providerUpper = anySetting.Trim().ToUpperInvariant();
+                        providerKey = providerUpper.ToLowerInvariant();
+                    }
+                    else
+                    {
+                        providerUpper = (defaultPhone.Provider ?? string.Empty).Trim().ToUpperInvariant();
+                        providerKey = providerUpper.ToLowerInvariant();
+                        if (string.IsNullOrWhiteSpace(phoneNumberId))
+                            phoneNumberId = defaultPhone.PhoneNumberId;
+                    }
+                }
+
+                if (providerUpper != "META_CLOUD")
+                    return ResponseResult.ErrorInfo("? Unsupported provider for Inbox media.", "Inbox media is supported only for META_CLOUD.");
+
+                if (string.IsNullOrWhiteSpace(phoneNumberId))
+                {
+                    var phoneRow = await _db.WhatsAppPhoneNumbers
+                        .AsNoTracking()
+                        .Where(n => n.BusinessId == businessId
+                                    && n.IsActive
+                                    && n.Provider.ToLower() == providerKey)
+                        .OrderByDescending(n => n.IsDefault)
+                        .ThenByDescending(n => n.UpdatedAt ?? n.CreatedAt)
+                        .Select(n => n.PhoneNumberId)
+                        .FirstOrDefaultAsync();
+
+                    if (!string.IsNullOrWhiteSpace(phoneRow))
+                        phoneNumberId = phoneRow;
+                }
+
+                if (string.IsNullOrWhiteSpace(phoneNumberId))
+                    return ResponseResult.ErrorInfo("? Missing PhoneNumberId for META_CLOUD. Configure a default sender or pass PhoneNumberId.");
+
+                Guid? contactId = dto.ContactId != Guid.Empty ? dto.ContactId : null;
+                if (!contactId.HasValue)
+                {
+                    var contact = await _db.Contacts.FirstOrDefaultAsync(c =>
+                        c.BusinessId == businessId &&
+                        c.PhoneNumber == recipientDigits);
+                    contactId = contact?.Id;
+                }
+
+                var caption = string.IsNullOrWhiteSpace(dto.Caption) ? null : dto.Caption.Trim();
+                if (type == "audio" && !string.IsNullOrWhiteSpace(caption))
+                    return ResponseResult.ErrorInfo("? Audio does not support captions.", "Remove Caption/Text when sending an audio message.");
+
+                object payload = type switch
+                {
+                    "image" => new
+                    {
+                        messaging_product = "whatsapp",
+                        to = recipientDigits,
+                        type = "image",
+                        image = new { id = mediaId, caption }
+                    },
+                    "document" => new
+                    {
+                        messaging_product = "whatsapp",
+                        to = recipientDigits,
+                        type = "document",
+                        document = new { id = mediaId, caption, filename = dto.FileName }
+                    },
+                    "video" => new
+                    {
+                        messaging_product = "whatsapp",
+                        to = recipientDigits,
+                        type = "video",
+                        video = new { id = mediaId, caption }
+                    },
+                    "audio" => new
+                    {
+                        messaging_product = "whatsapp",
+                        to = recipientDigits,
+                        type = "audio",
+                        audio = new { id = mediaId }
+                    },
+                    _ => throw new InvalidOperationException("Unsupported media type.")
+                };
+
+                var sendResult = await SendViaProviderAsync(
+                    businessId,
+                    providerUpper!,
+                    p => p.SendInteractiveAsync(payload),
+                    phoneNumberId
+                );
+
+                string? messageId = sendResult.MessageId;
+                if (string.IsNullOrWhiteSpace(messageId) && !string.IsNullOrWhiteSpace(sendResult.RawResponse))
+                {
+                    try
+                    {
+                        var raw = sendResult.RawResponse!.TrimStart();
+                        if (raw.StartsWith("{"))
+                        {
+                            using var parsed = JsonDocument.Parse(raw);
+                            if (parsed.RootElement.TryGetProperty("messages", out var msgs)
+                                && msgs.ValueKind == JsonValueKind.Array
+                                && msgs.GetArrayLength() > 0
+                                && msgs[0].TryGetProperty("id", out var idProp))
+                            {
+                                messageId = idProp.GetString();
+                            }
+                        }
+                    }
+                    catch { /* ignore parse issues */ }
+                }
+
+                var rendered =
+                    string.IsNullOrWhiteSpace(caption)
+                        ? type switch
+                        {
+                            "image" => string.IsNullOrWhiteSpace(dto.FileName) ? "Image sent" : $"Image sent: {dto.FileName}",
+                            "document" => string.IsNullOrWhiteSpace(dto.FileName) ? "PDF sent" : $"PDF sent: {dto.FileName}",
+                            "video" => string.IsNullOrWhiteSpace(dto.FileName) ? "Video sent" : $"Video sent: {dto.FileName}",
+                            "audio" => string.IsNullOrWhiteSpace(dto.FileName) ? "Audio sent" : $"Audio sent: {dto.FileName}",
+                            _ => "Media sent"
+                        }
+                        : caption!;
+
+                var log = new MessageLog
+                {
+                    Id = Guid.NewGuid(),
+                    BusinessId = businessId,
+                    RecipientNumber = recipientDigits,
+                    MessageContent = rendered,
+                    RenderedBody = rendered,
+                    ContactId = contactId,
+                    MediaUrl = null,
+                    MediaId = mediaId,
+                    MediaType = type,
+                    FileName = dto.FileName,
+                    MimeType = dto.MimeType,
+                    Status = sendResult.Success ? "Sent" : "Failed",
+                    ErrorMessage = sendResult.Success ? null : sendResult.Message,
+                    RawResponse = sendResult.RawResponse,
+                    CreatedAt = DateTime.UtcNow,
+                    SentAt = DateTime.UtcNow,
+                    MessageId = messageId,
+                    ProviderMessageId = messageId,
+                    Source = dto.Source
+                };
+
+                await _db.MessageLogs.AddAsync(log);
+                await _db.SaveChangesAsync();
+
+                return new ResponseResult
+                {
+                    Success = sendResult.Success,
+                    Message = sendResult.Success
+                        ? "? Media message sent successfully."
+                        : (sendResult.Message ?? "? WhatsApp API returned an error."),
+                    Data = new
+                    {
+                        Success = sendResult.Success,
+                        MessageId = messageId,
+                        LogId = log.Id
+                    },
+                    RawResponse = sendResult.RawResponse,
+                    MessageId = messageId,
+                    LogId = log.Id
+                };
+            }
+            catch (Exception ex)
+            {
+                return ResponseResult.ErrorInfo("? Failed to send media message.", ex.ToString());
+            }
+        }
+
+        public async Task<ResponseResult> SendLocationDirectAsync(LocationMessageSendDto dto)
+        {
+            try
+            {
+                var businessId = _httpContextAccessor.HttpContext?.User?.GetBusinessId()
+                    ?? throw new UnauthorizedAccessException("? Cannot resolve BusinessId from context.");
+
+                if (dto == null) throw new ArgumentNullException(nameof(dto));
+
+                if (dto.Latitude < -90 || dto.Latitude > 90)
+                    return ResponseResult.ErrorInfo("? Invalid latitude.", "Latitude must be between -90 and 90.");
+                if (dto.Longitude < -180 || dto.Longitude > 180)
+                    return ResponseResult.ErrorInfo("? Invalid longitude.", "Longitude must be between -180 and 180.");
+
+                var recipientRaw = (dto.RecipientNumber ?? string.Empty).Trim();
+                var recipientDigits = PhoneNumberNormalizer.NormalizeToE164Digits(recipientRaw, "IN");
+                if (string.IsNullOrWhiteSpace(recipientDigits))
+                    return ResponseResult.ErrorInfo("? Invalid recipient number.", $"Invalid/unsupported phone: '{recipientRaw}'");
+
+                string? providerUpper = string.IsNullOrWhiteSpace(dto.Provider)
+                    ? null
+                    : dto.Provider!.Trim().ToUpperInvariant();
+                string? providerKey = providerUpper?.ToLowerInvariant();
+                string? phoneNumberId = string.IsNullOrWhiteSpace(dto.PhoneNumberId) ? null : dto.PhoneNumberId!.Trim();
+
+                if (string.IsNullOrWhiteSpace(providerUpper))
+                {
+                    var defaultPhone = await _db.WhatsAppPhoneNumbers
+                        .AsNoTracking()
+                        .Where(n => n.BusinessId == businessId && n.IsActive)
+                        .OrderByDescending(n => n.IsDefault)
+                        .ThenByDescending(n => n.UpdatedAt ?? n.CreatedAt)
+                        .Select(n => new { n.Provider, n.PhoneNumberId })
+                        .FirstOrDefaultAsync();
+
+                    if (defaultPhone == null)
+                    {
+                        var anySetting = await _db.WhatsAppSettings
+                            .AsNoTracking()
+                            .Where(s => s.BusinessId == businessId && s.IsActive)
+                            .OrderByDescending(s => s.UpdatedAt ?? s.CreatedAt)
+                            .Select(s => s.Provider)
+                            .FirstOrDefaultAsync();
+
+                        if (string.IsNullOrWhiteSpace(anySetting))
+                            return ResponseResult.ErrorInfo("? WhatsApp configuration not found (no active numbers or settings).");
+
+                        providerUpper = anySetting.Trim().ToUpperInvariant();
+                        providerKey = providerUpper.ToLowerInvariant();
+                    }
+                    else
+                    {
+                        providerUpper = (defaultPhone.Provider ?? string.Empty).Trim().ToUpperInvariant();
+                        providerKey = providerUpper.ToLowerInvariant();
+                        if (string.IsNullOrWhiteSpace(phoneNumberId))
+                            phoneNumberId = defaultPhone.PhoneNumberId;
+                    }
+                }
+
+                if (providerUpper != "META_CLOUD")
+                    return ResponseResult.ErrorInfo("? Unsupported provider for Inbox location.", "Inbox location is supported only for META_CLOUD.");
+
+                if (string.IsNullOrWhiteSpace(phoneNumberId))
+                {
+                    var phoneRow = await _db.WhatsAppPhoneNumbers
+                        .AsNoTracking()
+                        .Where(n => n.BusinessId == businessId
+                                    && n.IsActive
+                                    && n.Provider.ToLower() == providerKey)
+                        .OrderByDescending(n => n.IsDefault)
+                        .ThenByDescending(n => n.UpdatedAt ?? n.CreatedAt)
+                        .Select(n => n.PhoneNumberId)
+                        .FirstOrDefaultAsync();
+
+                    if (!string.IsNullOrWhiteSpace(phoneRow))
+                        phoneNumberId = phoneRow;
+                }
+
+                if (string.IsNullOrWhiteSpace(phoneNumberId))
+                    return ResponseResult.ErrorInfo("? Missing PhoneNumberId for META_CLOUD. Configure a default sender or pass PhoneNumberId.");
+
+                object payload = new
+                {
+                    messaging_product = "whatsapp",
+                    to = recipientDigits,
+                    type = "location",
+                    location = new
+                    {
+                        latitude = dto.Latitude,
+                        longitude = dto.Longitude,
+                        name = string.IsNullOrWhiteSpace(dto.Name) ? null : dto.Name.Trim(),
+                        address = string.IsNullOrWhiteSpace(dto.Address) ? null : dto.Address.Trim()
+                    }
+                };
+
+                var sendResult = await SendViaProviderAsync(
+                    businessId,
+                    providerUpper!,
+                    p => p.SendInteractiveAsync(payload),
+                    phoneNumberId
+                );
+
+                string? messageId = sendResult.MessageId;
+                if (string.IsNullOrWhiteSpace(messageId) && !string.IsNullOrWhiteSpace(sendResult.RawResponse))
+                {
+                    try
+                    {
+                        var raw = sendResult.RawResponse!.TrimStart();
+                        if (raw.StartsWith("{"))
+                        {
+                            using var parsed = JsonDocument.Parse(raw);
+                            if (parsed.RootElement.TryGetProperty("messages", out var msgs)
+                                && msgs.ValueKind == JsonValueKind.Array
+                                && msgs.GetArrayLength() > 0
+                                && msgs[0].TryGetProperty("id", out var idProp))
+                            {
+                                messageId = idProp.GetString();
+                            }
+                        }
+                    }
+                    catch { /* ignore parse issues */ }
+                }
+
+                var rendered = string.IsNullOrWhiteSpace(dto.Name)
+                    ? "Location sent"
+                    : dto.Name!.Trim();
+
+                var log = new MessageLog
+                {
+                    Id = Guid.NewGuid(),
+                    BusinessId = businessId,
+                    RecipientNumber = recipientDigits,
+                    MessageContent = rendered,
+                    RenderedBody = rendered,
+                    ContactId = dto.ContactId != Guid.Empty ? dto.ContactId : (Guid?)null,
+                    MediaUrl = null,
+                    MediaId = null,
+                    MediaType = "location",
+                    FileName = null,
+                    MimeType = null,
+                    LocationLatitude = dto.Latitude,
+                    LocationLongitude = dto.Longitude,
+                    LocationName = string.IsNullOrWhiteSpace(dto.Name) ? null : dto.Name.Trim(),
+                    LocationAddress = string.IsNullOrWhiteSpace(dto.Address) ? null : dto.Address.Trim(),
+                    Status = sendResult.Success ? "Sent" : "Failed",
+                    ErrorMessage = sendResult.Success ? null : sendResult.Message,
+                    RawResponse = sendResult.RawResponse,
+                    CreatedAt = DateTime.UtcNow,
+                    SentAt = DateTime.UtcNow,
+                    MessageId = messageId,
+                    ProviderMessageId = messageId,
+                    Source = dto.Source
+                };
+
+                await _db.MessageLogs.AddAsync(log);
+                await _db.SaveChangesAsync();
+
+                return new ResponseResult
+                {
+                    Success = sendResult.Success,
+                    Message = sendResult.Success
+                        ? "? Location sent successfully."
+                        : (sendResult.Message ?? "? WhatsApp API returned an error."),
+                    Data = new
+                    {
+                        Success = sendResult.Success,
+                        MessageId = messageId,
+                        LogId = log.Id
+                    },
+                    RawResponse = sendResult.RawResponse,
+                    MessageId = messageId,
+                    LogId = log.Id
+                };
+            }
+            catch (Exception ex)
+            {
+                return ResponseResult.ErrorInfo("? Failed to send location message.", ex.ToString());
+            }
+        }
+
         public async Task<ResponseResult> SendAutomationReply(TextMessageSendDto dto)
         {
             try

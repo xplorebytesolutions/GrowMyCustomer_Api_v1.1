@@ -21,7 +21,19 @@ public class MessageLog
     public string MessageContent { get; set; }
     public string? MediaUrl { get; set; }
 
+    // ?? Inbox media (WhatsApp native media storage; no public URLs)
+    public string? MediaId { get; set; }        // WhatsApp Cloud API media_id
+    public string? MediaType { get; set; }      // "text" | "image" | "document" | "video" | "audio" | "location"
+    public string? FileName { get; set; }       // original filename (for UI display)
+    public string? MimeType { get; set; }       // e.g. "image/jpeg", "application/pdf"
+
     // 🧾 Status Info
+    // ?? Location payload (WhatsApp "location" messages)
+    public double? LocationLatitude { get; set; }
+    public double? LocationLongitude { get; set; }
+    public string? LocationName { get; set; }
+    public string? LocationAddress { get; set; }
+
     public string Status { get; set; } = "Queued";
     public string? ErrorMessage { get; set; }
     public string? RawResponse { get; set; }

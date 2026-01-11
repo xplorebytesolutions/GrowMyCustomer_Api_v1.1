@@ -51,7 +51,7 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
             _providerDirectory = providerDirectory;
         }
 
-        public async Task ProcessChatAsync(JsonElement value)
+        public async Task ProcessChatAsync(JsonElement value, JsonElement msg)
         {
             try
             {
@@ -68,15 +68,6 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                 // digits-only normalizer (matches how we store/search phones)
                 static string Normalize(string? s) =>
                     string.IsNullOrWhiteSpace(s) ? "" : new string(s.Where(char.IsDigit).ToArray());
-
-                // 1) Extract WA message (Meta Cloud shape)
-                if (!value.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array || messages.GetArrayLength() == 0)
-                {
-                    logger.LogWarning("Inbound WA payload has no messages array.");
-                    return;
-                }
-
-                var msg = messages[0];
 
                 var msgType = msg.TryGetProperty("type", out var typeProp)
                     ? typeProp.GetString()
@@ -120,8 +111,88 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                                  img.TryGetProperty("caption", out var cap)
                                  => cap.GetString(),
 
+                    "document" when msg.TryGetProperty("document", out var doc) &&
+                                    doc.TryGetProperty("caption", out var dcap)
+                                    => dcap.GetString(),
+
+                    "video" when msg.TryGetProperty("video", out var vid) &&
+                                 vid.TryGetProperty("caption", out var vcap)
+                                 => vcap.GetString(),
+
                     _ => null
                 };
+
+                string? inboundMediaId = null;
+                string? inboundMediaType = null;
+                string? inboundMimeType = null;
+                string? inboundFileName = null;
+                double? inboundLocationLat = null;
+                double? inboundLocationLon = null;
+                string? inboundLocationName = null;
+                string? inboundLocationAddress = null;
+
+                if (msgType == "image" && msg.TryGetProperty("image", out var imgObj) && imgObj.ValueKind == JsonValueKind.Object)
+                {
+                    inboundMediaType = "image";
+
+                    if (imgObj.TryGetProperty("id", out var mid) && mid.ValueKind == JsonValueKind.String)
+                        inboundMediaId = mid.GetString();
+
+                    if (imgObj.TryGetProperty("mime_type", out var mt) && mt.ValueKind == JsonValueKind.String)
+                        inboundMimeType = mt.GetString();
+                }
+                else if (msgType == "document" && msg.TryGetProperty("document", out var docObj) && docObj.ValueKind == JsonValueKind.Object)
+                {
+                    inboundMediaType = "document";
+
+                    if (docObj.TryGetProperty("id", out var mid) && mid.ValueKind == JsonValueKind.String)
+                        inboundMediaId = mid.GetString();
+
+                    if (docObj.TryGetProperty("mime_type", out var mt) && mt.ValueKind == JsonValueKind.String)
+                        inboundMimeType = mt.GetString();
+
+                    if (docObj.TryGetProperty("filename", out var fn) && fn.ValueKind == JsonValueKind.String)
+                        inboundFileName = fn.GetString();
+                }
+                else if (msgType == "video" && msg.TryGetProperty("video", out var vidObj) && vidObj.ValueKind == JsonValueKind.Object)
+                {
+                    inboundMediaType = "video";
+
+                    if (vidObj.TryGetProperty("id", out var mid) && mid.ValueKind == JsonValueKind.String)
+                        inboundMediaId = mid.GetString();
+
+                    if (vidObj.TryGetProperty("mime_type", out var mt) && mt.ValueKind == JsonValueKind.String)
+                        inboundMimeType = mt.GetString();
+                }
+                else if (msgType == "audio" && msg.TryGetProperty("audio", out var audObj) && audObj.ValueKind == JsonValueKind.Object)
+                {
+                    inboundMediaType = "audio";
+
+                    if (audObj.TryGetProperty("id", out var mid) && mid.ValueKind == JsonValueKind.String)
+                        inboundMediaId = mid.GetString();
+
+                    if (audObj.TryGetProperty("mime_type", out var mt) && mt.ValueKind == JsonValueKind.String)
+                        inboundMimeType = mt.GetString();
+                }
+                else if (msgType == "location" && msg.TryGetProperty("location", out var locObj) && locObj.ValueKind == JsonValueKind.Object)
+                {
+                    inboundMediaType = "location";
+
+                    if (locObj.TryGetProperty("latitude", out var lat) && lat.ValueKind == JsonValueKind.Number && lat.TryGetDouble(out var v1))
+                        inboundLocationLat = v1;
+
+                    if (locObj.TryGetProperty("longitude", out var lon) && lon.ValueKind == JsonValueKind.Number && lon.TryGetDouble(out var v2))
+                        inboundLocationLon = v2;
+
+                    if (locObj.TryGetProperty("name", out var nm) && nm.ValueKind == JsonValueKind.String)
+                        inboundLocationName = nm.GetString();
+
+                    if (locObj.TryGetProperty("address", out var addr) && addr.ValueKind == JsonValueKind.String)
+                        inboundLocationAddress = addr.GetString();
+
+                    if (string.IsNullOrWhiteSpace(content))
+                        content = inboundLocationName ?? inboundLocationAddress ?? "Location";
+                }
 
                 logger.LogInformation(
                     "📥 Inbound WA message: type={MsgType}, from={From}, wamid={Wamid}, providerTsUtc={ProviderTsUtc}, preview={Preview}",
@@ -272,6 +343,14 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                     RecipientPhone = contactPhone,
 
                     MessageBody = content ?? string.Empty,
+                    MediaId = inboundMediaId,
+                    MediaType = inboundMediaType,
+                    FileName = inboundFileName,
+                    MimeType = inboundMimeType,
+                    LocationLatitude = inboundLocationLat,
+                    LocationLongitude = inboundLocationLon,
+                    LocationName = inboundLocationName,
+                    LocationAddress = inboundLocationAddress,
                     IsIncoming = true,
                     Status = "received",
                     SentAt = providerSentAtUtc,
@@ -299,7 +378,17 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                         // ✅ helps UI match / debug
                         logId = saved.Id,
                         messageLogId = saved.Id,
-                        providerMessageId = saved.ProviderMessageId
+                        providerMessageId = saved.ProviderMessageId,
+
+                        // ✅ media support (image/pdf)
+                        mediaId = saved.MediaId,
+                        mediaType = saved.MediaType,
+                        fileName = saved.FileName,
+                        mimeType = saved.MimeType,
+                        locationLatitude = saved.LocationLatitude,
+                        locationLongitude = saved.LocationLongitude,
+                        locationName = saved.LocationName,
+                        locationAddress = saved.LocationAddress
                     });
 
                 // 6) Try AutoReply runtime first, then fall back to legacy automation

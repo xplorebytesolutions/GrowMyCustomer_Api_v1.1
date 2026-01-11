@@ -27,9 +27,28 @@ namespace xbytechat.api.Features.ChatInbox.DTOs
 
         /// <summary>
         /// Rendered text content for the bubble.
-        /// For templates we’ll store the final rendered body.
+        /// For templates we'll store the final rendered body.
         /// </summary>
         public string Text { get; set; } = string.Empty;
+
+        /// <summary>
+        /// WhatsApp media_id (if this is a media message).
+        /// </summary>
+        public string? MediaId { get; set; }
+
+        /// <summary>
+        /// "image" | "document" | "video" | "audio" | "location"
+        /// </summary>
+        public string? MediaType { get; set; }
+
+        public string? FileName { get; set; }
+        public string? MimeType { get; set; }
+
+        // Location message fields (when MediaType == "location")
+        public double? LocationLatitude { get; set; }
+        public double? LocationLongitude { get; set; }
+        public string? LocationName { get; set; }
+        public string? LocationAddress { get; set; }
 
         /// <summary>
         /// When we created/sent the message (UTC).

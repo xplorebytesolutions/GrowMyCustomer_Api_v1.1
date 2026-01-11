@@ -216,14 +216,14 @@ namespace xbytechat.api.Features.Webhooks.Services
                             }
 
                             // (C) Inbound plain message types → INBOUND
-                            if (type is "text" or "image" or "audio")
+                            if (type is "text" or "image" or "document" or "audio" or "video" or "location")
                             {
                                 _logger.LogInformation(
                                     "💬 Dispatcher: routing to InboundMessageProcessor (message type: {Type}, provider={Provider}).",
                                     type,
                                     provider ?? "meta");
 
-                                await _inboundMessageProcessor.ProcessChatAsync(value);
+                                await _inboundMessageProcessor.ProcessChatAsync(value, m);
                                 continue;
                             }
 

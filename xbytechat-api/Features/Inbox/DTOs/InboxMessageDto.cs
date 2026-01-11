@@ -21,5 +21,18 @@ namespace xbytechat.api.Features.Inbox.DTOs
 
         // ✅ NEW: Provider/WAMID idempotency key (Meta "messages[0].id")
         public string? ProviderMessageId { get; set; }
+
+        // ✅ NEW: WhatsApp native media (for inbound/outbound attachments)
+        // Stored as media_id (not public URL) to avoid hosting files ourselves.
+        public string? MediaId { get; set; }            // WhatsApp Cloud API media_id
+        public string? MediaType { get; set; }          // "image" | "document" | "video" | "audio" | "location"
+        public string? FileName { get; set; }           // original filename (if available)
+        public string? MimeType { get; set; }           // e.g. "image/jpeg", "application/pdf"
+
+        // ?? WhatsApp location message fields (no MediaId)
+        public double? LocationLatitude { get; set; }
+        public double? LocationLongitude { get; set; }
+        public string? LocationName { get; set; }
+        public string? LocationAddress { get; set; }
     }
 }

@@ -296,6 +296,22 @@ namespace xbytechat.api.Features.ChatInbox.Services
                 lastMessageByContactId.TryGetValue(row.ContactId, out var lastMsg);
 
                 var preview = lastMsg?.RenderedBody ?? lastMsg?.MessageContent ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(preview) && lastMsg != null && !string.IsNullOrWhiteSpace(lastMsg.MediaType))
+                {
+                    var mt = lastMsg.MediaType.Trim().ToLowerInvariant();
+                    var name = lastMsg.FileName ?? string.Empty;
+
+                    if (mt == "image")
+                        preview = "Photo";
+                    else if (mt == "document")
+                        preview = string.IsNullOrWhiteSpace(name) ? "PDF" : name;
+                    else if (mt == "video")
+                        preview = string.IsNullOrWhiteSpace(name) ? "Video" : name;
+                    else if (mt == "audio")
+                        preview = string.IsNullOrWhiteSpace(name) ? "Audio" : name;
+                    else if (mt == "location")
+                        preview = string.IsNullOrWhiteSpace(lastMsg.LocationName) ? "Location" : lastMsg.LocationName!;
+                }
                 if (preview.Length > 140) preview = preview.Substring(0, 140) + "…";
 
                 var unread = unreadCounts.TryGetValue(row.ContactId, out var uc) ? uc : 0;
@@ -615,6 +631,14 @@ namespace xbytechat.api.Features.ChatInbox.Services
                     Direction = x.IsIncoming ? "in" : "out",
                     Channel = "whatsapp",
                     Text = x.RenderedBody ?? x.MessageContent ?? string.Empty,
+                    MediaId = x.MediaId,
+                    MediaType = x.MediaType,
+                    FileName = x.FileName,
+                    MimeType = x.MimeType,
+                    LocationLatitude = x.LocationLatitude,
+                    LocationLongitude = x.LocationLongitude,
+                    LocationName = x.LocationName,
+                    LocationAddress = x.LocationAddress,
                     SentAtUtc = utcInstant,
                     Status = x.Status,
                     ErrorMessage = x.ErrorMessage

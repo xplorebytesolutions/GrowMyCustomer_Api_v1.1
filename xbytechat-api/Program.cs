@@ -435,6 +435,8 @@ builder.Services.AddScoped<IQuickReplyService, QuickReplyService>();
 builder.Services.AddScoped<IChatInboxQueryService, ChatInboxQueryService>();
 builder.Services.AddScoped<IChatInboxCommandService, ChatInboxCommandService>();
 builder.Services.AddScoped<IChatInboxAssignmentService, ChatInboxAssignmentService>();
+builder.Services.AddScoped<IChatInboxMediaUploadService, ChatInboxMediaUploadService>();
+builder.Services.AddScoped<IChatInboxMediaContentService, ChatInboxMediaContentService>();
 
 #endregion
 

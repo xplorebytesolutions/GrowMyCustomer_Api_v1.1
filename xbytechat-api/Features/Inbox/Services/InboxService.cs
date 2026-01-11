@@ -48,6 +48,15 @@ namespace xbytechat.api.Features.Inbox.Services
                 RecipientNumber = dto.RecipientPhone,
                 MessageContent = dto.MessageBody,
 
+                MediaId = dto.MediaId,
+                MediaType = dto.MediaType,
+                FileName = dto.FileName,
+                MimeType = dto.MimeType,
+                LocationLatitude = dto.LocationLatitude,
+                LocationLongitude = dto.LocationLongitude,
+                LocationName = dto.LocationName,
+                LocationAddress = dto.LocationAddress,
+
                 IsIncoming = true,
 
                 // ✅ Keep status consistent for UI (incoming should never be updated by delivery webhooks now)
@@ -96,6 +105,15 @@ namespace xbytechat.api.Features.Inbox.Services
 
                 RecipientNumber = dto.RecipientPhone,
                 MessageContent = dto.MessageBody,
+
+                MediaId = dto.MediaId,
+                MediaType = dto.MediaType,
+                FileName = dto.FileName,
+                MimeType = dto.MimeType,
+                LocationLatitude = dto.LocationLatitude,
+                LocationLongitude = dto.LocationLongitude,
+                LocationName = dto.LocationName,
+                LocationAddress = dto.LocationAddress,
 
                 IsIncoming = false,
 

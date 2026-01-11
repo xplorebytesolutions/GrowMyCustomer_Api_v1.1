@@ -5,6 +5,6 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
 {
     public interface IInboundMessageProcessor
     {
-        Task ProcessChatAsync(JsonElement value);
+        Task ProcessChatAsync(JsonElement value, JsonElement message);
     }
 }

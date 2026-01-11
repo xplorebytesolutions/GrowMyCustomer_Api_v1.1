@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using xbytechat.api;
@@ -11,9 +12,11 @@ using xbytechat.api;
 namespace xbytechat.api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260111125552_AddCoulmnsForVideoAudioLocation")]
+    partial class AddCoulmnsForVideoAudioLocation
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -49,7 +52,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("TagId");
 
-                    b.ToTable("ContactTags", (string)null);
+                    b.ToTable("ContactTags");
                 });
 
             modelBuilder.Entity("MessageLog", b =>
@@ -219,7 +222,7 @@ namespace xbytechat.api.Migrations
                     b.HasIndex("BusinessId", "IsIncoming", "ContactId", "MessageTime")
                         .HasDatabaseName("ix_msglogs_biz_in_contact_msgtime");
 
-                    b.ToTable("MessageLogs", (string)null);
+                    b.ToTable("MessageLogs");
                 });
 
             modelBuilder.Entity("xbytechat.api.AuthModule.Models.User", b =>
@@ -271,7 +274,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("RoleId");
 
-                    b.ToTable("Users", (string)null);
+                    b.ToTable("Users");
 
                     b.HasData(
                         new
@@ -457,7 +460,7 @@ namespace xbytechat.api.Migrations
                     b.HasIndex("Code")
                         .IsUnique();
 
-                    b.ToTable("Permissions", (string)null);
+                    b.ToTable("Permissions");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.AccessControl.Models.Plan", b =>
@@ -488,7 +491,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("Plans", (string)null);
+                    b.ToTable("Plans");
 
                     b.HasData(
                         new
@@ -532,7 +535,7 @@ namespace xbytechat.api.Migrations
                         .IsUnique()
                         .HasDatabaseName("UX_PlanPermissions_Plan_Permission");
 
-                    b.ToTable("PlanPermissions", (string)null);
+                    b.ToTable("PlanPermissions");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.AccessControl.Models.Role", b =>
@@ -570,7 +573,7 @@ namespace xbytechat.api.Migrations
                         .IsUnique()
                         .HasFilter("\"BusinessId\" IS NOT NULL");
 
-                    b.ToTable("Roles", (string)null);
+                    b.ToTable("Roles");
 
                     b.HasData(
                         new
@@ -652,7 +655,7 @@ namespace xbytechat.api.Migrations
                         .IsUnique()
                         .HasDatabaseName("UX_RolePermissions_Role_Permission");
 
-                    b.ToTable("RolePermissions", (string)null);
+                    b.ToTable("RolePermissions");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.AccessControl.Models.UserPermission", b =>
@@ -685,7 +688,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("UserPermissions", (string)null);
+                    b.ToTable("UserPermissions");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.AccountInsights.Models.AccountInsightsAction", b =>
@@ -767,7 +770,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("AuditLogs", (string)null);
+                    b.ToTable("AuditLogs");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.AutoReplyBuilder.Flows.Models.AutoReplyFlow", b =>
@@ -827,7 +830,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("BusinessId", "Name");
 
-                    b.ToTable("AutoReplyFlows", (string)null);
+                    b.ToTable("AutoReplyFlows");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.AutoReplyBuilder.Models.AutoReplyFlowEdge", b =>
@@ -860,7 +863,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("FlowId");
 
-                    b.ToTable("AutoReplyFlowEdges", (string)null);
+                    b.ToTable("AutoReplyFlowEdges");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.AutoReplyBuilder.Models.AutoReplyFlowNode", b =>
@@ -897,7 +900,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("FlowId", "NodeName");
 
-                    b.ToTable("AutoReplyFlowNode", (string)null);
+                    b.ToTable("AutoReplyFlowNode");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.AutoReplyBuilder.Models.AutoReplyLog", b =>
@@ -935,7 +938,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("AutoReplyLogs", (string)null);
+                    b.ToTable("AutoReplyLogs");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.Automation.Models.AutomationFlow", b =>
@@ -974,7 +977,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("AutomationFlows", (string)null);
+                    b.ToTable("AutomationFlows");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.BusinessModule.Models.Business", b =>
@@ -1067,7 +1070,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("PlanId");
 
-                    b.ToTable("Businesses", (string)null);
+                    b.ToTable("Businesses");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CRM.Models.Contact", b =>
@@ -1166,7 +1169,7 @@ namespace xbytechat.api.Migrations
                     b.HasIndex("BusinessId", "PhoneNumber")
                         .IsUnique();
 
-                    b.ToTable("Contacts", (string)null);
+                    b.ToTable("Contacts");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CRM.Models.Note", b =>
@@ -1211,7 +1214,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("Notes", (string)null);
+                    b.ToTable("Notes");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CRM.Models.Reminder", b =>
@@ -1281,7 +1284,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("Reminders", (string)null);
+                    b.ToTable("Reminders");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CRM.Models.Tag", b =>
@@ -1320,7 +1323,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("Tags", (string)null);
+                    b.ToTable("Tags");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CRM.Timelines.Models.LeadTimeline", b =>
@@ -1382,7 +1385,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("ContactId");
 
-                    b.ToTable("LeadTimelines", (string)null);
+                    b.ToTable("LeadTimelines");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CTAFlowBuilder.Models.CTAFlowConfig", b =>
@@ -1419,7 +1422,7 @@ namespace xbytechat.api.Migrations
                     b.HasIndex("BusinessId", "FlowName", "IsActive")
                         .IsUnique();
 
-                    b.ToTable("CTAFlowConfigs", (string)null);
+                    b.ToTable("CTAFlowConfigs");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CTAFlowBuilder.Models.CTAFlowStep", b =>
@@ -1471,7 +1474,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("CTAFlowConfigId");
 
-                    b.ToTable("CTAFlowSteps", (string)null);
+                    b.ToTable("CTAFlowSteps");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CTAFlowBuilder.Models.FlowButtonLink", b =>
@@ -1509,7 +1512,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("CTAFlowStepId");
 
-                    b.ToTable("FlowButtonLinks", (string)null);
+                    b.ToTable("FlowButtonLinks");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CTAFlowBuilder.Models.FlowExecutionLog", b =>
@@ -1639,7 +1642,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("CTADefinitions", (string)null);
+                    b.ToTable("CTADefinitions");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CampaignModule.Models.Audience", b =>
@@ -1859,7 +1862,7 @@ namespace xbytechat.api.Migrations
                         .IsUnique()
                         .HasDatabaseName("UX_Campaigns_Biz_Name");
 
-                    b.ToTable("Campaigns", (string)null);
+                    b.ToTable("Campaigns");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CampaignModule.Models.CampaignAudienceAttachment", b =>
@@ -1947,7 +1950,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("CampaignId");
 
-                    b.ToTable("CampaignButtons", (string)null);
+                    b.ToTable("CampaignButtons");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CampaignModule.Models.CampaignFlowOverride", b =>
@@ -1982,7 +1985,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("CampaignId");
 
-                    b.ToTable("CampaignFlowOverrides", (string)null);
+                    b.ToTable("CampaignFlowOverrides");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CampaignModule.Models.CampaignRecipient", b =>
@@ -2111,7 +2114,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("CampaignId");
 
-                    b.ToTable("CampaignVariableMaps", (string)null);
+                    b.ToTable("CampaignVariableMaps");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CampaignModule.Models.CsvBatch", b =>
@@ -2509,7 +2512,7 @@ namespace xbytechat.api.Migrations
                     b.HasIndex("CampaignId", "Day", "ButtonIndex")
                         .IsUnique();
 
-                    b.ToTable("CampaignClickDailyAgg", (string)null);
+                    b.ToTable("CampaignClickDailyAgg");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CampaignTracking.Worker.CampaignClickLog", b =>
@@ -2569,7 +2572,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("CampaignId", "ClickType", "ClickedAt");
 
-                    b.ToTable("CampaignClickLogs", (string)null);
+                    b.ToTable("CampaignClickLogs");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.Catalog.Models.CatalogClickLog", b =>
@@ -2650,7 +2653,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("CatalogClickLogs", (string)null);
+                    b.ToTable("CatalogClickLogs");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.Catalog.Models.Product", b =>
@@ -2698,7 +2701,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("Products", (string)null);
+                    b.ToTable("Products");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CustomFields.Models.CustomFieldDefinition", b =>
@@ -2856,7 +2859,7 @@ namespace xbytechat.api.Migrations
                     b.HasIndex("Prefix")
                         .IsUnique();
 
-                    b.ToTable("ApiKeys", (string)null);
+                    b.ToTable("ApiKeys");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CustomeApi.Models.ContactJourneyState", b =>
@@ -2898,7 +2901,7 @@ namespace xbytechat.api.Migrations
                     b.HasIndex("BusinessId", "FlowId", "ContactPhone")
                         .IsUnique();
 
-                    b.ToTable("ContactJourneyStates", (string)null);
+                    b.ToTable("ContactJourneyStates");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.CustomeApi.Models.CustomerWebhookConfig", b =>
@@ -2930,7 +2933,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("CustomerWebhookConfigs", (string)null);
+                    b.ToTable("CustomerWebhookConfigs");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.ESU.Facebook.Models.EsuToken", b =>
@@ -3086,7 +3089,7 @@ namespace xbytechat.api.Migrations
                     b.HasIndex("BusinessId", "QuotaKey")
                         .IsUnique();
 
-                    b.ToTable("BusinessQuotaOverrides", (string)null);
+                    b.ToTable("BusinessQuotaOverrides");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.Entitlements.Models.BusinessUsageCounter", b =>
@@ -3123,7 +3126,7 @@ namespace xbytechat.api.Migrations
                     b.HasIndex("BusinessId", "QuotaKey", "Period", "WindowStartUtc")
                         .IsUnique();
 
-                    b.ToTable("BusinessUsageCounters", (string)null);
+                    b.ToTable("BusinessUsageCounters");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.Entitlements.Models.PlanQuota", b =>
@@ -3161,7 +3164,7 @@ namespace xbytechat.api.Migrations
                     b.HasIndex("PlanId", "QuotaKey")
                         .IsUnique();
 
-                    b.ToTable("PlanQuotas", (string)null);
+                    b.ToTable("PlanQuotas");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.Inbox.Models.ChatSessionState", b =>
@@ -3190,7 +3193,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("BusinessId", "ContactId");
 
-                    b.ToTable("ChatSessionStates", (string)null);
+                    b.ToTable("ChatSessionStates");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.Inbox.Models.ContactRead", b =>
@@ -3220,7 +3223,7 @@ namespace xbytechat.api.Migrations
                         .IsUnique()
                         .HasDatabaseName("ux_contactreads_biz_user_contact");
 
-                    b.ToTable("ContactReads", (string)null);
+                    b.ToTable("ContactReads");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.Inbox.Models.QuickReply", b =>
@@ -3283,7 +3286,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("BusinessId", "Scope", "IsActive");
 
-                    b.ToTable("QuickReplies", (string)null);
+                    b.ToTable("QuickReplies");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.MessageManagement.DTOs.MessageStatusLog", b =>
@@ -3364,7 +3367,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("MessageStatusLogs", (string)null);
+                    b.ToTable("MessageStatusLogs");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.Payment.Models.Coupon", b =>
@@ -3667,7 +3670,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("PlanFeatureMatrix", (string)null);
+                    b.ToTable("PlanFeatureMatrix");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.TemplateModule.Models.TemplateDraft", b =>
@@ -3712,7 +3715,7 @@ namespace xbytechat.api.Migrations
                     b.HasIndex("BusinessId", "UpdatedAt")
                         .HasDatabaseName("IX_TemplateDrafts_Biz_UpdatedAt");
 
-                    b.ToTable("TemplateDrafts", (string)null);
+                    b.ToTable("TemplateDrafts");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.TemplateModule.Models.TemplateDraftVariant", b =>
@@ -3771,7 +3774,7 @@ namespace xbytechat.api.Migrations
                         .IsUnique()
                         .HasDatabaseName("UX_TDraftVariants_Draft_Language");
 
-                    b.ToTable("TemplateDraftVariants", (string)null);
+                    b.ToTable("TemplateDraftVariants");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.TemplateModule.Models.TemplateLibraryItem", b =>
@@ -3810,7 +3813,7 @@ namespace xbytechat.api.Migrations
                         .IsUnique()
                         .HasDatabaseName("UX_TLibrary_Industry_Key");
 
-                    b.ToTable("TemplateLibraryItems", (string)null);
+                    b.ToTable("TemplateLibraryItems");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.TemplateModule.Models.TemplateLibraryVariant", b =>
@@ -3860,7 +3863,7 @@ namespace xbytechat.api.Migrations
                         .IsUnique()
                         .HasDatabaseName("UX_TLibraryVariants_Item_Lang");
 
-                    b.ToTable("TemplateLibraryVariants", (string)null);
+                    b.ToTable("TemplateLibraryVariants");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.Tracking.Models.TrackingLog", b =>
@@ -3958,7 +3961,7 @@ namespace xbytechat.api.Migrations
                     b.HasIndex("MessageLogId")
                         .HasDatabaseName("IX_TrackingLogs_MessageLog");
 
-                    b.ToTable("TrackingLogs", (string)null);
+                    b.ToTable("TrackingLogs");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.Webhooks.Models.FailedWebhookLog", b =>
@@ -3985,7 +3988,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("FailedWebhookLogs", (string)null);
+                    b.ToTable("FailedWebhookLogs");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.Webhooks.Models.WebhookSettings", b =>
@@ -4002,7 +4005,7 @@ namespace xbytechat.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("WebhookSettings", (string)null);
+                    b.ToTable("WebhookSettings");
                 });
 
             modelBuilder.Entity("xbytechat.api.Features.WhatsAppSettings.Models.WhatsAppPhoneNumber", b =>
@@ -4085,7 +4088,7 @@ namespace xbytechat.api.Migrations
                     b.HasIndex("BusinessId")
                         .IsUnique();
 
-                    b.ToTable("BusinessPlanInfos", (string)null);
+                    b.ToTable("BusinessPlanInfos");
                 });
 
             modelBuilder.Entity("xbytechat_api.Features.Billing.Models.ProviderBillingEvent", b =>
@@ -4154,7 +4157,7 @@ namespace xbytechat.api.Migrations
                         .HasDatabaseName("UX_ProviderBillingEvents_UniqueEvent")
                         .HasFilter("\"ProviderMessageId\" IS NOT NULL");
 
-                    b.ToTable("ProviderBillingEvents", (string)null);
+                    b.ToTable("ProviderBillingEvents");
                 });
 
             modelBuilder.Entity("xbytechat_api.WhatsAppSettings.Models.WhatsAppSettingEntity", b =>
@@ -4370,7 +4373,7 @@ namespace xbytechat.api.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.OwnsOne("xbytechat.api.Features.AutoReplyBuilder.Models.AutoReplyFlowNode.Position#xbytechat.api.Features.AutoReplyBuilder.Models.Position", "Position", b1 =>
+                    b.OwnsOne("xbytechat.api.Features.AutoReplyBuilder.Models.Position", "Position", b1 =>
                         {
                             b1.Property<Guid>("AutoReplyFlowNodeId")
                                 .HasColumnType("uuid");
@@ -4383,7 +4386,7 @@ namespace xbytechat.api.Migrations
 
                             b1.HasKey("AutoReplyFlowNodeId");
 
-                            b1.ToTable("AutoReplyFlowNode", (string)null);
+                            b1.ToTable("AutoReplyFlowNode");
 
                             b1.WithOwner()
                                 .HasForeignKey("AutoReplyFlowNodeId");

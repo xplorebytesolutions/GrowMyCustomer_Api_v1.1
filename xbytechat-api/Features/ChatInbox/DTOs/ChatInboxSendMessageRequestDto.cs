@@ -20,7 +20,41 @@ namespace xbytechat.api.Features.ChatInbox.DTOs
 
         public string? NumberId { get; set; }
 
-        public string Text { get; set; } = string.Empty;
+        /// <summary>
+        /// Optional for media messages. Required when sending plain text.
+        /// For media, this becomes the optional caption.
+        /// </summary>
+        public string? Text { get; set; }
+
+        /// <summary>
+        /// WhatsApp Cloud API media id returned by /{phone_number_id}/media upload.
+        /// </summary>
+        public string? MediaId { get; set; }
+
+        /// <summary>
+        /// "image" | "document" | "video" | "audio"
+        /// For location messages, send coordinates and set MediaType to "location" (MediaId must be null).
+        /// </summary>
+        public string? MediaType { get; set; }
+
+        /// <summary>
+        /// Original filename for UI display (optional).
+        /// </summary>
+        public string? FileName { get; set; }
+
+        /// <summary>
+        /// Client-supplied mime type for display/logging (optional).
+        /// </summary>
+        public string? MimeType { get; set; }
+
+        /// <summary>
+        /// Optional: WhatsApp "location" message fields.
+        /// When provided, MediaId must be null.
+        /// </summary>
+        public double? LocationLatitude { get; set; }
+        public double? LocationLongitude { get; set; }
+        public string? LocationName { get; set; }
+        public string? LocationAddress { get; set; }
 
         /// <summary>
         /// Server-side only (claims). Controller will overwrite it.

@@ -11,6 +11,7 @@ using xbytechat.api.Features.CRM.Models;               // Contact
 using xbytechat.api.Features.Inbox.Models;
 using xbytechat.api.Features.MessagesEngine.DTOs;
 using xbytechat.api.Features.MessagesEngine.Services;
+using xbytechat.api.Helpers;
 using xbytechat.api.Models;                            // AppDbContext, MessageLog
 
 namespace xbytechat.api.Features.ChatInbox.Services
@@ -56,8 +57,33 @@ namespace xbytechat.api.Features.ChatInbox.Services
             if (string.IsNullOrWhiteSpace(request.To))
                 throw new ArgumentException("Target phone (To) is required.", nameof(request));
 
-            if (string.IsNullOrWhiteSpace(request.Text))
-                throw new ArgumentException("Text is required.", nameof(request));
+            var text = string.IsNullOrWhiteSpace(request.Text) ? null : request.Text.Trim();
+            var mediaId = string.IsNullOrWhiteSpace(request.MediaId) ? null : request.MediaId.Trim();
+            var mediaType = string.IsNullOrWhiteSpace(request.MediaType) ? null : request.MediaType.Trim().ToLowerInvariant();
+            var hasLocation = request.LocationLatitude.HasValue && request.LocationLongitude.HasValue;
+
+            var hasText = !string.IsNullOrWhiteSpace(text);
+            var hasMedia = !string.IsNullOrWhiteSpace(mediaId);
+
+            if (!hasText && !hasMedia && !hasLocation)
+                throw new ArgumentException("Either Text, MediaId, or Location is required.", nameof(request));
+
+            if (hasMedia && mediaType is not ("image" or "document" or "video" or "audio"))
+                throw new ArgumentException("MediaType must be 'image', 'document', 'video', or 'audio'.", nameof(request));
+
+            if (hasMedia && mediaType == "audio" && hasText)
+                throw new ArgumentException("Audio messages do not support captions. Please remove Text.", nameof(request));
+
+            if (hasLocation && (hasMedia || hasText))
+                throw new ArgumentException("Location messages cannot include Text or MediaId.", nameof(request));
+
+            if (hasLocation)
+            {
+                var lat = request.LocationLatitude!.Value;
+                var lon = request.LocationLongitude!.Value;
+                if (lat < -90 || lat > 90) throw new ArgumentException("LocationLatitude must be between -90 and 90.", nameof(request));
+                if (lon < -180 || lon > 180) throw new ArgumentException("LocationLongitude must be between -180 and 180.", nameof(request));
+            }
 
             var businessId = request.BusinessId;
             var actorUserId = request.ActorUserId;
@@ -76,18 +102,21 @@ namespace xbytechat.api.Features.ChatInbox.Services
             await EnforceAssignedOnlyReplyAsync(actor, contact, ct).ConfigureAwait(false);
 
             // 📨 Send via MessagesEngine
-            var textDto = new TextMessageSendDto
-            {
-                BusinessId = businessId,
-                RecipientNumber = phone,
-                TextContent = request.Text,
-                ContactId = contact.Id,
-                PhoneNumberId = string.IsNullOrWhiteSpace(request.NumberId) ? null : request.NumberId.Trim(),
-                Provider = null,
-                Source = "agent"
-            };
-
-            var result = await _messageEngine.SendTextDirectAsync(textDto).ConfigureAwait(false);
+            var result =
+                hasMedia
+                    ? await SendMediaAsync(businessId, phone, contact.Id, request, mediaId!, mediaType!, text).ConfigureAwait(false)
+                    : hasLocation
+                        ? await SendLocationAsync(businessId, phone, contact.Id, request).ConfigureAwait(false)
+                        : await _messageEngine.SendTextDirectAsync(new TextMessageSendDto
+                        {
+                            BusinessId = businessId,
+                            RecipientNumber = phone,
+                            TextContent = text!,
+                            ContactId = contact.Id,
+                            PhoneNumberId = string.IsNullOrWhiteSpace(request.NumberId) ? null : request.NumberId.Trim(),
+                            Provider = null,
+                            Source = "agent"
+                        }).ConfigureAwait(false);
 
             // Load log for richer bubble
             MessageLog? log = null;
@@ -105,7 +134,7 @@ namespace xbytechat.api.Features.ChatInbox.Services
             await _db.SaveChangesAsync(ct).ConfigureAwait(false);
 
             var bubbleId = log?.Id ?? Guid.NewGuid();
-            var bubbleText = log?.MessageContent ?? request.Text;
+            var bubbleText = log?.MessageContent ?? (text ?? string.Empty);
 
             var ts = log?.SentAt ?? log?.CreatedAt ?? nowUtc;
             var sentAtUtc = ts.Kind == DateTimeKind.Utc ? ts : ts.ToUniversalTime();
@@ -119,10 +148,74 @@ namespace xbytechat.api.Features.ChatInbox.Services
                 Direction = "out",
                 Channel = "whatsapp",
                 Text = bubbleText,
+                MediaId = log?.MediaId,
+                MediaType = log?.MediaType,
+                FileName = log?.FileName,
+                MimeType = log?.MimeType,
+                LocationLatitude = log?.LocationLatitude,
+                LocationLongitude = log?.LocationLongitude,
+                LocationName = log?.LocationName,
+                LocationAddress = log?.LocationAddress,
                 SentAtUtc = sentAtUtc,
                 Status = status,
                 ErrorMessage = err
             };
+        }
+
+        private async Task<ResponseResult> SendMediaAsync(
+            Guid businessId,
+            string to,
+            Guid contactId,
+            ChatInboxSendMessageRequestDto request,
+            string mediaId,
+            string mediaType,
+            string? caption)
+        {
+            var dto = new MediaMessageSendDto
+            {
+                BusinessId = businessId,
+                RecipientNumber = to,
+                MediaId = mediaId,
+                Caption = caption,
+                FileName = string.IsNullOrWhiteSpace(request.FileName) ? null : request.FileName.Trim(),
+                MimeType = string.IsNullOrWhiteSpace(request.MimeType) ? null : request.MimeType.Trim(),
+                ContactId = contactId,
+                PhoneNumberId = string.IsNullOrWhiteSpace(request.NumberId) ? null : request.NumberId.Trim(),
+                Provider = null,
+                Source = "agent"
+            };
+
+            return mediaType switch
+            {
+                "image" => await _messageEngine.SendImageDirectAsync(dto).ConfigureAwait(false),
+                "document" => await _messageEngine.SendDocumentDirectAsync(dto).ConfigureAwait(false),
+                "video" => await _messageEngine.SendVideoDirectAsync(dto).ConfigureAwait(false),
+                "audio" => await _messageEngine.SendAudioDirectAsync(dto).ConfigureAwait(false),
+                _ => throw new ArgumentException("Unsupported MediaType.", nameof(mediaType))
+            };
+        }
+
+        private Task<ResponseResult> SendLocationAsync(
+            Guid businessId,
+            string to,
+            Guid contactId,
+            ChatInboxSendMessageRequestDto request)
+        {
+            var dto = new LocationMessageSendDto
+            {
+                BusinessId = businessId,
+                RecipientNumber = to,
+                ContactId = contactId,
+                PhoneNumberId = string.IsNullOrWhiteSpace(request.NumberId) ? null : request.NumberId.Trim(),
+                Provider = null,
+                Source = "agent",
+                Latitude = request.LocationLatitude!.Value,
+                Longitude = request.LocationLongitude!.Value,
+                Name = string.IsNullOrWhiteSpace(request.LocationName) ? null : request.LocationName.Trim(),
+                Address = string.IsNullOrWhiteSpace(request.LocationAddress) ? null : request.LocationAddress.Trim()
+            };
+
+            return _messageEngine.SendLocationDirectAsync(dto);
         }
 
         //public async Task MarkConversationAsReadAsync(ChatInboxMarkReadRequestDto request, CancellationToken ct = default)
