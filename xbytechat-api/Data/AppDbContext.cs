@@ -190,8 +190,8 @@ namespace xbytechat.api
             modelBuilder.Entity<Plan>().HasData(new Plan
             {
                 Id = basicPlanId,
-                Code = "SYSTEM_DEFAULT",
-                Name = "System Default",
+                Code = "10001",
+                Name = "Basic",
                 Description = "Default free plan",
                 IsActive = true,
                 IsInternal = true,

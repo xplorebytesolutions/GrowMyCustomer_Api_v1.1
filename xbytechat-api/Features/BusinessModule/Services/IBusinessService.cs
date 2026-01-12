@@ -21,8 +21,13 @@ namespace xbytechat.api.Features.BusinessModule.Services
         Task<ResponseResult> UpdateBusinessAsync(Guid businessId, UpdateBusinessDto dto);
 
         Task<List<PendingBusinessDto>> GetPendingBusinessesAsync(string role, string userId, string? status = null);
-        Task<List<Business>> GetApprovedBusinessesAsync();
+        Task<List<ApprovedBusinessDto>> GetApprovedBusinessesAsync();
         Task<ResponseResult> HardDeleteBusinessAsync(Guid businessId);
+
+        /// <summary>
+        /// Assigns a specific plan to a business.
+        /// </summary>
+        Task<ResponseResult> AssignPlanAsync(Guid businessId, Guid planId);
     }
 
 }

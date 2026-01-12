@@ -147,6 +147,18 @@ namespace xbytechat.api.Features.BusinessModule.Controllers
             }
         }
 
+        // 🟢 Assign Plan Endpoint
+        [HttpPut("{id}/plan")]
+        [Authorize(Roles = "superadmin,admin,partner")]
+        public async Task<IActionResult> AssignPlan(Guid id, [FromBody] AssignPlanDto dto)
+        {
+            if (dto == null || dto.PlanId == Guid.Empty)
+                return BadRequest(ResponseResult.ErrorInfo("❌ Invalid plan ID."));
+
+            var result = await _businessService.AssignPlanAsync(id, dto.PlanId);
+            return result.Success ? Ok(result) : BadRequest(result);
+        }
+
         // 🛠 Complete profile after signup
         [HttpPost("profile-completion/{businessId}")]
         public async Task<IActionResult> CompleteProfile(Guid businessId, [FromBody] ProfileCompletionDto dto)

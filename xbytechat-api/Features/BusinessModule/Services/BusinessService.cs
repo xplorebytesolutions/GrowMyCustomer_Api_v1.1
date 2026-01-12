@@ -14,6 +14,9 @@ using xbytechat.api.Features.PlanManagement.Models;
 using xbytechat.api.Helpers;
 using xbytechat.api.Models.BusinessModel;
 using xbytechat.api.Repositories.Interfaces;
+using xbytechat.api.Features.AccessControl.Models;
+using xbytechat.api.Features.Entitlements.Models;
+using xbytechat.api.Features.Entitlements;
 
 namespace xbytechat.api.Features.BusinessModule.Services
 {
@@ -22,6 +25,8 @@ namespace xbytechat.api.Features.BusinessModule.Services
         private readonly IGenericRepository<Business> _businessRepo;
         private readonly IGenericRepository<User> _userRepo;
         private readonly IGenericRepository<Role> _roleRepo;
+        private readonly IGenericRepository<Plan> _planRepo;
+        private readonly IGenericRepository<PlanQuota> _planQuotaRepo;
         private readonly IAuditLogService _auditLogService;
         private readonly IHttpContextAccessor _httpContextAccessor;
         // inside BusinessService class (class scope, not inside a method)
@@ -34,6 +39,8 @@ namespace xbytechat.api.Features.BusinessModule.Services
             IGenericRepository<Business> businessRepo,
             IGenericRepository<User> userRepo,
             IGenericRepository<Role> roleRepo,
+            IGenericRepository<Plan> planRepo,
+            IGenericRepository<PlanQuota> planQuotaRepo,
             IAuditLogService auditLogService,
             IHttpContextAccessor httpContextAccessor, IPasswordHasher<User> passwordHasher)
         {
@@ -42,6 +49,8 @@ namespace xbytechat.api.Features.BusinessModule.Services
             _businessRepo = businessRepo;
             _userRepo = userRepo;
             _roleRepo = roleRepo;
+            _planRepo = planRepo;
+            _planQuotaRepo = planQuotaRepo;
             _auditLogService = auditLogService;
             _httpContextAccessor = httpContextAccessor;
         }
@@ -531,11 +540,21 @@ namespace xbytechat.api.Features.BusinessModule.Services
             return await _businessRepo.FindByIdAsync(businessId);
         }
 
-        public async Task<List<Business>> GetApprovedBusinessesAsync()
+        public async Task<List<ApprovedBusinessDto>> GetApprovedBusinessesAsync()
         {
             return await _businessRepo.AsQueryable()
+               .Include(b => b.Plan)
                .Where(b => b.IsApproved && !b.IsDeleted)
                .OrderBy(b => b.CompanyName)
+               .Select(b => new ApprovedBusinessDto
+               {
+                   Id = b.Id,
+                   CompanyName = b.CompanyName,
+                   BusinessEmail = b.BusinessEmail,
+                   PlanId = b.PlanId,
+                   PlanName = b.Plan != null ? b.Plan.Name : null,
+                   LogoUrl = b.LogoUrl
+               })
                .ToListAsync();
         }
         public async Task<ResponseResult> HardDeleteBusinessAsync(Guid businessId)
@@ -584,6 +603,95 @@ namespace xbytechat.api.Features.BusinessModule.Services
             {
                 return ResponseResult.ErrorInfo("❌ Failed to delete business: " + ex.Message);
             }
+        }
+
+        public async Task<ResponseResult> AssignPlanAsync(Guid businessId, Guid planId)
+        {
+            var business = await _businessRepo.AsQueryable()
+                .Include(b => b.BusinessPlanInfo)
+                .FirstOrDefaultAsync(b => b.Id == businessId);
+
+            if (business is null)
+                return ResponseResult.ErrorInfo("❌ Business not found");
+
+            // 1. Fetch Real Plan
+            var plan = await _planRepo.FindByIdAsync(planId);
+            if (plan == null)
+            {
+                return ResponseResult.ErrorInfo("❌ Plan not found.");
+            }
+
+            // 2. Fetch Quotas for this Plan
+            // Assuming we look for "MESSAGES_PER_MONTH"
+            var quotas = await _planQuotaRepo.AsQueryable()
+                .Where(q => q.PlanId == planId)
+                .ToListAsync();
+
+            var messageQuota = quotas
+                .FirstOrDefault(q => q.QuotaKey == QuotaKeys.MessagesPerMonth);
+
+            int monthlyLimit = messageQuota != null ? (int)messageQuota.Limit : 1000; // Default fallback if not defined
+
+            // 3. Map Plan Code to Enum (Best Effort)
+            // If Plan.Code is "SMART", map to PlanType.Smart
+            // This is brittle if Enum and DB drift, but necessary if BusinessPlanInfo relies on Enum.
+            PlanType planTypeEnum = PlanType.Basic;
+            if (Enum.TryParse<PlanType>(plan.Code, true, out var parsed))
+            {
+                planTypeEnum = parsed;
+            }
+            else
+            {
+                // Fallback logic by name? Or default to Basic/Smart if unknown
+                planTypeEnum = PlanType.Smart; 
+            }
+
+            // Update linking
+            business.PlanId = planId;
+
+            // Handle BusinessPlanInfo
+            if (business.BusinessPlanInfo == null)
+            {
+                var newPlanInfo = new BusinessPlanInfo
+                {
+                    Id = Guid.NewGuid(),
+                    BusinessId = business.Id,
+                    Plan = planTypeEnum, 
+                    TotalMonthlyQuota = monthlyLimit, 
+                    RemainingMessages = monthlyLimit,
+                    QuotaResetDate = DateTime.UtcNow.AddMonths(1),
+                    WalletBalance = 0
+                };
+                
+                // Explicitly add the new child entity
+                _db.Entry(newPlanInfo).State = EntityState.Added;
+                business.BusinessPlanInfo = newPlanInfo;
+            }
+            else
+            {
+                // Update existing info
+                business.BusinessPlanInfo.Plan = planTypeEnum;
+                business.BusinessPlanInfo.TotalMonthlyQuota = monthlyLimit;
+                // Ideally we shouldn't reset RemainingMessages if just upgrading mid-month unless that's policy.
+                // For now, let's reset it to the new limit to be generous, or keep it if it's lower? 
+                // Let's reset it for now to ensure they get the new quota immediately.
+                business.BusinessPlanInfo.RemainingMessages = monthlyLimit; 
+                
+                _db.Entry(business.BusinessPlanInfo).State = EntityState.Modified;
+            }
+            
+            await _businessRepo.SaveAsync();
+
+            await _auditLogService.SaveLogAsync(new AuditLog
+            {
+                BusinessId = business.Id,
+                ActionType = "business.plan_assigned",
+                Description = $"Assigned Plan '{plan.Name}' ({planId}) to business {business.CompanyName}. Limit: {monthlyLimit}",
+                PerformedByUserId = Guid.TryParse(_httpContextAccessor.HttpContext?.User?.FindFirst("id")?.Value, out var uid) ? uid : Guid.Empty,
+                PerformedByUserName = _httpContextAccessor.HttpContext?.User?.FindFirst("email")?.Value
+            });
+
+            return ResponseResult.SuccessInfo($"✅ Plan '{plan.Name}' assigned successfully.");
         }
 
         public IQueryable<Business> Query()
