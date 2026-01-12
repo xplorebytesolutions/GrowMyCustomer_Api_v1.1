@@ -79,6 +79,37 @@ namespace xbytechat.api.AuthModule.Controllers
         [HttpPost("logout")]
         public IActionResult Logout() => Ok(new { success = true, message = "Logged out" });
 
+        [Authorize]
+        [HttpPost("change-password")]
+        public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordDto dto)
+        {
+            if (!ModelState.IsValid)
+            {
+                var errors = ModelState.Values
+                    .SelectMany(v => v.Errors)
+                    .Select(e => e.ErrorMessage)
+                    .ToList();
+
+                return BadRequest(new { success = false, message = "Validation failed.", errors });
+            }
+
+            var principal = HttpContext.User;
+
+            var userIdStr =
+                principal.FindFirst(JwtRegisteredClaimNames.Sub)?.Value ??
+                principal.FindFirst(ClaimTypes.NameIdentifier)?.Value ??
+                principal.FindFirst("uid")?.Value ??
+                principal.FindFirst("id")?.Value;
+
+            if (!Guid.TryParse(userIdStr, out var userId))
+            {
+                return Unauthorized(new { success = false, message = "Missing user id in token." });
+            }
+
+            var result = await _authService.ChangePasswordAsync(userId, dto);
+            return result.Success ? Ok(result) : BadRequest(result);
+        }
+
         // ✅ (Optional) lightweight session echo from claims (works with Bearer)
         [Authorize]
         [HttpGet("session")]

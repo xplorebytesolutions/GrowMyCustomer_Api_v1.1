@@ -373,6 +373,47 @@ namespace xbytechat.api.AuthModule.Services
             return ResponseResult.SuccessInfo("✅ Password reset successfully");
         }
 
+        public async Task<ResponseResult> ChangePasswordAsync(Guid userId, ChangePasswordDto dto)
+        {
+            if (userId == Guid.Empty)
+                return ResponseResult.ErrorInfo("Invalid user.");
+
+            if (dto == null)
+                return ResponseResult.ErrorInfo("Invalid request.");
+
+            if (string.IsNullOrWhiteSpace(dto.CurrentPassword) || string.IsNullOrWhiteSpace(dto.NewPassword))
+                return ResponseResult.ErrorInfo("Current password and new password are required.");
+
+            if (dto.NewPassword.Length < 6)
+                return ResponseResult.ErrorInfo("Password must be at least 6 characters long.");
+
+            if (dto.NewPassword == dto.CurrentPassword)
+                return ResponseResult.ErrorInfo("New password must be different.");
+
+            var user = await _userRepo.FirstOrDefaultAsync(u => u.Id == userId && !u.IsDeleted);
+            if (user == null)
+                return ResponseResult.ErrorInfo("User not found.");
+
+            var currentHash = HashPassword(dto.CurrentPassword);
+            if (!string.Equals(user.PasswordHash, currentHash, StringComparison.Ordinal))
+            {
+                _logger.LogWarning("⚠️ Change password failed: invalid current password. UserId={UserId}", userId);
+                return ResponseResult.ErrorInfo("Current password is incorrect.");
+            }
+
+            user.PasswordHash = HashPassword(dto.NewPassword);
+
+            // Rotate refresh token so existing refresh tokens become invalid.
+            user.RefreshToken = Guid.NewGuid().ToString("N");
+            user.RefreshTokenExpiry = DateTime.UtcNow.AddDays(30);
+
+            _userRepo.Update(user);
+            await _userRepo.SaveAsync();
+            _logger.LogInformation("✅ Password changed successfully. UserId={UserId}", userId);
+
+            return ResponseResult.SuccessInfo("✅ Password updated successfully.");
+        }
+
         private async Task<(List<string> Perms, List<string> Features)> GetEffectivePermissionsAndFeaturesAsync(Guid userId)
         {
             var user = await _dbContext.Users

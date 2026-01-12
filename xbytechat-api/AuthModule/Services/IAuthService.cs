@@ -12,6 +12,7 @@ namespace xbytechat.api.AuthModule.Services
         Task<ResponseResult> ResetPasswordAsync(ResetPasswordDto dto);           // ✅ Add this
         Task<ResponseResult> ResendConfirmationAsync(ResendConfirmationDto dto); // ✅ Add this
         Task<ResponseResult> RefreshTokenAsync(string refreshToken);
+        Task<ResponseResult> ChangePasswordAsync(System.Guid userId, ChangePasswordDto dto);
     
     }
 }
