@@ -22,6 +22,12 @@ namespace xbytechat.api.Features.CTAFlowBuilder.Services
         public string? Provider { get; set; }          // "META_CLOUD" | "PINNACLE"
         public string? PhoneNumberId { get; set; }
             public bool AlwaysSend { get; set; } = true;
+
+        // CTA media-header support (step 1/phase 1):
+        // When a template requires a media header (image/video/document), WhatsApp requires a header component with a link.
+        // In phase 2/3 we will persist this per-step (CTAFlowStep.HeaderMediaUrl) via UI + DB.
+        // For now this is an optional override input so runtime can attach the header when available.
+        public string? HeaderMediaUrl { get; set; }
     }
 
     public record NextStepResult

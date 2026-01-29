@@ -91,8 +91,14 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
                 ["redirect_uri"] = cfg.RedirectUri,
                 ["state"] = state,
                 ["response_type"] = "code",
-                ["config_id"] = cfg.ConfigId
+                ["config_id"] = cfg.ConfigId,
+
+                // ✅ IMPORTANT: Explicit scope improves reliability + App Review clarity
+                ["scope"] = !string.IsNullOrWhiteSpace(cfg.Scopes)
+         ? cfg.Scopes.Trim()
+         : null
             };
+
 
             var launchUrl = QueryHelpers.AddQueryString(dialogBase, query);
 
@@ -352,13 +358,15 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
             }
 
             // 6) FINAL REDIRECT
-            var returnUrl = TryGetReturnUrlFromState(state);
-            var redirectBase = string.IsNullOrWhiteSpace(returnUrl)
-                ? "/welcomepage"
-                : returnUrl!;
+            var rawReturnUrl = TryGetReturnUrlFromState(state);
+
+            // ✅ default should match your app route (you are using "/app/welcomepage" in FE)
+            var redirectBase = SanitizeReturnUrlOrDefault(rawReturnUrl, "/app/welcomepage");
+
+            // ✅ align with FE param expectation: ?esuStatus=success
             var redirect = redirectBase.Contains("?")
-                ? $"{redirectBase}&connected=1"
-                : $"{redirectBase}?connected=1";
+                ? $"{redirectBase}&esuStatus=success"
+                : $"{redirectBase}?esuStatus=success";
 
             _log.LogInformation(
                 "ESU Callback: Redirecting biz={BusinessId} to {Redirect}",
@@ -366,6 +374,7 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
                 redirect);
 
             return new FacebookEsuCallbackResponseDto { RedirectTo = redirect };
+
         }
 
         // =======================
@@ -706,6 +715,26 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
             return false;
         }
 
+        private static string SanitizeReturnUrlOrDefault(string? returnUrl, string fallback)
+        {
+            // Default
+            if (string.IsNullOrWhiteSpace(returnUrl))
+                return fallback;
+
+            returnUrl = returnUrl.Trim();
+
+            // ✅ Allow only relative paths (recommended)
+            // Must start with "/" but NOT with "//" (protocol-relative)
+            if (!returnUrl.StartsWith("/", StringComparison.Ordinal) ||
+                returnUrl.StartsWith("//", StringComparison.Ordinal) ||
+                returnUrl.Contains("\\", StringComparison.Ordinal))
+            {
+                return fallback;
+            }
+
+            return returnUrl;
+        }
+
 
         public async Task FullDeleteAsync(Guid businessId, CancellationToken ct = default)
         {
@@ -808,6 +837,137 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
             }
 
             _log.LogInformation("ESU FullDelete: completed for biz={BusinessId}", businessId);
+        }
+
+        public async Task RegisterPhoneNumberAsync(Guid businessId, string pin, CancellationToken ct)
+        {
+            if (businessId == Guid.Empty)
+                throw new ArgumentException("BusinessId is required.", nameof(businessId));
+
+            pin = (pin ?? string.Empty).Trim();
+
+            // PIN must be exactly 6 digits
+            if (pin.Length != 6 || !IsAllDigits(pin))
+                throw new InvalidOperationException("PIN must be exactly 6 digits.");
+
+            // Load the WhatsApp settings saved during ESU
+            var setting = await _waSettings.GetSettingsByBusinessIdAsync(businessId);
+            if (setting is null)
+                throw new InvalidOperationException("WhatsApp settings not found for this business. Please connect ESU first.");
+
+            if (!string.Equals(setting.Provider, Provider, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Invalid provider. Expected '{Provider}' but got '{setting.Provider}'.");
+
+            if (string.IsNullOrWhiteSpace(setting.ApiUrl) || string.IsNullOrWhiteSpace(setting.ApiKey))
+                throw new InvalidOperationException("WhatsApp settings are missing ApiUrl/ApiKey. Please reconnect ESU.");
+
+            // Pick a phone_number_id from your stored phone numbers table
+            // NOTE: We intentionally DO NOT accept phoneNumberId from client to avoid cross-tenant attacks.
+            var phones = await _waPhones.ListAsync(businessId, Provider, ct);
+            if (phones is null || phones.Count == 0)
+                throw new InvalidOperationException("No phone numbers found. Please complete ESU and phone sync first.");
+
+            // Choose the first one. If you later add "IsPrimary", pick that instead.
+            var phone = phones[0];
+
+            // IMPORTANT: Your phone entity must have the provider PhoneNumberId.
+            // Many implementations call it ProviderPhoneNumberId / PhoneNumberId / MetaPhoneNumberId.
+            // Adjust the property name below to match your model.
+            var phoneNumberId = GetPhoneNumberId(phone);
+
+            if (string.IsNullOrWhiteSpace(phoneNumberId))
+                throw new InvalidOperationException("PhoneNumberId is missing in stored phone record. Sync did not capture it.");
+
+            // Call Meta register endpoint
+            var url = $"{setting.ApiUrl.TrimEnd('/')}/{phoneNumberId}/register";
+
+            var payload = new
+            {
+                messaging_product = "whatsapp",
+                pin = pin
+            };
+
+            _log.LogInformation(
+                "ESU RegisterNumber: registering phone_number_id={PhoneNumberId} for biz={BusinessId}",
+                phoneNumberId,
+                businessId);
+
+            using var http = new HttpClient();
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", setting.ApiKey);
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, url)
+            {
+                Content = JsonContent.Create(payload)
+            };
+
+            using var res = await http.SendAsync(req, ct);
+            var body = await res.Content.ReadAsStringAsync(ct);
+
+            if (!res.IsSuccessStatusCode)
+            {
+                _log.LogWarning(
+                    "ESU RegisterNumber failed: biz={BusinessId}, phone_number_id={PhoneNumberId}, status={Status}, body={Body}",
+                    businessId,
+                    phoneNumberId,
+                    (int)res.StatusCode,
+                    Truncate(body));
+
+                // Bubble a clean message to the UI
+                throw new InvalidOperationException($"Failed to register phone number. Meta returned {(int)res.StatusCode}.");
+            }
+
+            _log.LogInformation(
+                "ESU RegisterNumber success: biz={BusinessId}, phone_number_id={PhoneNumberId}, body={Body}",
+                businessId,
+                phoneNumberId,
+                Truncate(body));
+
+            // Best-effort: resync after register so your UI stops showing pending.
+            try
+            {
+                var (added, updated, total) = await _waPhones.SyncFromProviderAsync(businessId, setting, Provider, ct);
+
+                _log.LogInformation(
+                    "ESU RegisterNumber: phone sync after register complete for biz={BusinessId}. Added={Added}, Updated={Updated}, Total={Total}",
+                    businessId, added, updated, total);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "ESU RegisterNumber: sync-after-register failed for biz={BusinessId} (non-blocking).",
+                    businessId);
+            }
+        }
+
+        private static bool IsAllDigits(string value)
+        {
+            foreach (var c in value)
+            {
+                if (c < '0' || c > '9') return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Extracts the Meta phone_number_id from your phone record.
+        /// Adjust this to match your actual model property name.
+        /// </summary>
+        private static string? GetPhoneNumberId(object phone)
+        {
+            // If your phone type is strongly typed (not object), replace with direct property access.
+            // Example:
+            // return phone.ProviderPhoneNumberId;
+
+            var type = phone.GetType();
+
+            // Try common property names without hardcoding your model here
+            var prop =
+                type.GetProperty("ProviderPhoneNumberId")
+                ?? type.GetProperty("PhoneNumberId")
+                ?? type.GetProperty("MetaPhoneNumberId")
+                ?? type.GetProperty("ProviderId");
+
+            return prop?.GetValue(phone)?.ToString();
         }
 
     }

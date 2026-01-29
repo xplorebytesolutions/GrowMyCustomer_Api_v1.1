@@ -54,6 +54,41 @@ namespace xbytechat.api.Features.CTAFlowBuilder.Controllers
             return Ok(new { message = "✅ Flow saved successfully", flowId });
         }
 
+        // UPDATE (save as draft by id)
+        [HttpPut("{id:guid}")]
+        public async Task<IActionResult> Update(Guid id, [FromBody] SaveVisualFlowDto dto)
+        {
+            var biz = User.FindFirst("businessId")?.Value;
+            var user = User.FindFirst("name")?.Value ?? "system";
+            if (!Guid.TryParse(biz, out var businessId))
+                return BadRequest(new { message = "❌ Invalid business." });
+
+            var result = await _flowService.UpdateVisualFlowAsync(id, dto, businessId, user);
+
+            return result.Status switch
+            {
+                "notFound" => NotFound(new { message = result.Message ?? "❌ Flow not found." }),
+                "requiresFork" => Conflict(new { message = result.Message ?? "❌ Edit requires fork.", campaigns = result.Campaigns }),
+                "error" => BadRequest(new { message = result.Message ?? "❌ Failed to update flow." }),
+                _ => Ok(new { message = result.Message ?? "✅ Flow updated (draft).", needsRepublish = result.NeedsRepublish })
+            };
+        }
+
+        // FORK (create a new draft copy)
+        [HttpPost("{id:guid}/fork")]
+        public async Task<IActionResult> Fork(Guid id)
+        {
+            var biz = User.FindFirst("businessId")?.Value;
+            var user = User.FindFirst("name")?.Value ?? "system";
+            if (!Guid.TryParse(biz, out var businessId))
+                return BadRequest(new { message = "❌ Invalid business." });
+
+            var forkId = await _flowService.ForkFlowAsync(id, businessId, user);
+            if (forkId == Guid.Empty) return NotFound(new { message = "❌ Flow not found." });
+
+            return Ok(new { flowId = forkId });
+        }
+
         // PUBLISH (by id)
         [HttpPost("{id:guid}/publish")]
         public async Task<IActionResult> Publish(Guid id)
@@ -63,8 +98,21 @@ namespace xbytechat.api.Features.CTAFlowBuilder.Controllers
             if (!Guid.TryParse(biz, out var businessId))
                 return BadRequest(new { message = "❌ Invalid business." });
 
-            var ok = await _flowService.PublishFlowAsync(id, businessId, user);
-            return ok ? Ok(new { message = "✅ Flow published." }) : NotFound(new { message = "❌ Flow not found." });
+            var result = await _flowService.PublishFlowAsync(id, businessId, user);
+
+            if (result.Success)
+                return Ok(new { message = result.Message ?? "✅ Flow published." });
+
+            var msg = (result.ErrorMessage ?? result.Message ?? "❌ Failed to publish.").Trim();
+
+            if (result.Code == 404)
+                return NotFound(new { message = msg });
+
+            // Validation failures return 400 with details in payload (issue list)
+            if (result.Code == 400)
+                return BadRequest(new { message = msg, issues = result.Payload });
+
+            return BadRequest(new { message = msg });
         }
 
         // DELETE (only if not attached)

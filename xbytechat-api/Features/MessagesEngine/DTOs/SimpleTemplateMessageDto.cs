@@ -16,6 +16,14 @@ namespace xbytechat.api.Features.MessagesEngine.DTOs
         public List<string> TemplateParameters { get; set; } = new();
         public bool HasStaticButtons { get; set; } = false;
 
+        // Optional: media header support (image/video/document)
+        // HeaderKind is canonical lowercase: none | image | video | document | text
+        public string? HeaderKind { get; set; }
+        public string? HeaderMediaUrl { get; set; }
+
+        // Optional: dynamic URL button params (index 0..2). Send only non-empty values.
+        public List<string> UrlButtonParams { get; set; } = new();
+
        // [RegularExpression("^(PINNACLE|META_CLOUD)$")]
         public string Provider { get; set; } = string.Empty;
         public string? PhoneNumberId { get; set; }

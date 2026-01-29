@@ -28,7 +28,11 @@ namespace xbytechat.api.Features.CTAFlowBuilder.Services
         Task<ResponseResult> DeleteFlowAsync(Guid flowId, Guid businessId, string deletedBy);
 
         // Publish
-        Task<bool> PublishFlowAsync(Guid flowId, Guid businessId, string user);
+        Task<ResponseResult> PublishFlowAsync(Guid flowId, Guid businessId, string user);
+
+        // Update (save as draft) + fork (create new draft copy)
+        Task<FlowUpdateResult> UpdateVisualFlowAsync(Guid flowId, SaveVisualFlowDto dto, Guid businessId, string user);
+        Task<Guid> ForkFlowAsync(Guid flowId, Guid businessId, string user);
 
         // Attached campaigns (for usage checks / modal)
         Task<IReadOnlyList<AttachedCampaignDto>> GetAttachedCampaignsAsync(Guid flowId, Guid businessId);

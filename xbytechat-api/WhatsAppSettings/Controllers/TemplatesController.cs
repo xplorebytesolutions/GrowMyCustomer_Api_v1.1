@@ -18,16 +18,38 @@ namespace xbytechat.api.WhatsAppSettings.Controllers
         public TemplatesController(AppDbContext db, ITemplateSyncService sync, IWhatsAppTemplateFetcherService fetcher)
         { _db = db; _sync = sync; _fetcher = fetcher; }
 
+        [HttpGet("summary/{businessId:guid}")]
+        [Authorize]
+        public async Task<IActionResult> Summary(Guid businessId)
+        {
+            var stats = await _db.WhatsAppTemplates
+                .AsNoTracking()
+                .Where(x => x.BusinessId == businessId && x.IsActive)
+                .GroupBy(x => x.Status)
+                .Select(g => new { Status = g.Key, Count = g.Count() })
+                .ToListAsync();
+
+            var draftCount = await _db.TemplateDrafts
+                .AsNoTracking()
+                .Where(x => x.BusinessId == businessId)
+                .CountAsync();
+
+            var libraryCount = await _db.TemplateLibraryItems
+                .AsNoTracking()
+                .CountAsync();
+
+            return Ok(new
+            {
+                success = true,
+                approved = stats.FirstOrDefault(s => s.Status == "APPROVED")?.Count ?? 0,
+                pending = stats.FirstOrDefault(s => s.Status == "PENDING" || s.Status == "PENDING_APPROVAL")?.Count ?? 0,
+                rejected = stats.FirstOrDefault(s => s.Status == "REJECTED")?.Count ?? 0,
+                drafts = draftCount,
+                library = libraryCount
+            });
+        }
 
         // Sync Templates
-        ////[HttpPost("sync/{businessId:guid}")]
-        ////[Authorize]
-        ////public async Task<IActionResult> Sync(Guid businessId, [FromQuery] bool force = false)
-        ////{
-        ////    if (businessId == Guid.Empty) return BadRequest(new { success = false, message = "Invalid businessId" });
-        ////    var result = await _sync.SyncBusinessTemplatesAsync(businessId, force);
-        ////    return Ok(new { success = true, result });
-        ////}
         [HttpPost("sync/{businessId:guid}")]
         [Authorize]
         public async Task<IActionResult> Sync(Guid businessId)
@@ -52,6 +74,7 @@ namespace xbytechat.api.WhatsAppSettings.Controllers
             [FromQuery] string? language = null,
             [FromQuery] string? provider = null,
             [FromQuery] string? category = null,
+            [FromQuery] string? media = null,
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 10,
             [FromQuery] string sortKey = "updatedAt",
@@ -85,6 +108,24 @@ namespace xbytechat.api.WhatsAppSettings.Controllers
                 query = query.Where(x => x.Category == cat);
             }
 
+            // Media filter (header kind)
+            // Supported values: all|text|image|video|document|pdf
+            // Note: WhatsAppTemplate.HeaderKind is stored canonical lowercase (none/text/image/video/document/location).
+            if (!string.IsNullOrWhiteSpace(media) && !media.Equals("ALL", StringComparison.OrdinalIgnoreCase))
+            {
+                var m = media.Trim().ToLowerInvariant();
+                if (m == "pdf") m = "document";
+
+                query = m switch
+                {
+                    "image" => query.Where(x => x.HeaderKind == "image"),
+                    "video" => query.Where(x => x.HeaderKind == "video"),
+                    "document" => query.Where(x => x.HeaderKind == "document"),
+                    "text" => query.Where(x => !x.RequiresMediaHeader && (x.HeaderKind == "none" || x.HeaderKind == "text")),
+                    _ => query
+                };
+            }
+
             if (!string.IsNullOrWhiteSpace(q))
             {
                 var term = q.Trim();
@@ -103,6 +144,7 @@ namespace xbytechat.api.WhatsAppSettings.Controllers
                 "category" => isAsc ? query.OrderBy(x => x.Category) : query.OrderByDescending(x => x.Category),
                 "language" => isAsc ? query.OrderBy(x => x.LanguageCode) : query.OrderByDescending(x => x.LanguageCode),
                 "status" => isAsc ? query.OrderBy(x => x.Status) : query.OrderByDescending(x => x.Status),
+                "createdat" => isAsc ? query.OrderBy(x => x.CreatedAt) : query.OrderByDescending(x => x.CreatedAt),
                 "updatedat" => isAsc ? query.OrderBy(x => x.UpdatedAt) : query.OrderByDescending(x => x.UpdatedAt),
                 _ => query.OrderByDescending(x => x.UpdatedAt)
             };
@@ -119,6 +161,9 @@ namespace xbytechat.api.WhatsAppSettings.Controllers
                     x.Category,
                     x.BodyPreview,
                     BodyVarCount = x.BodyVarCount,
+                    x.HeaderKind,
+                    x.RequiresMediaHeader,
+                    x.CreatedAt,
                     x.UrlButtons,
                     x.UpdatedAt,
                     x.LastSyncedAt

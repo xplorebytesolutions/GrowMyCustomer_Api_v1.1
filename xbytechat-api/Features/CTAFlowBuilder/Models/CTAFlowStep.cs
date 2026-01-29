@@ -26,6 +26,25 @@ namespace xbytechat.api.Features.CTAFlowBuilder.Models
 
         public string TemplateToSend { get; set; } = string.Empty;
 
+        /// <summary>
+        /// Optional media URL used when the selected WhatsApp template has a media header (image/video/document).
+        /// Stored per-step so click-triggered CTA sends can resolve media without relying on campaign context.
+        /// </summary>
+        public string? HeaderMediaUrl { get; set; }
+
+        /// <summary>
+        /// JSON array of body parameter values (1-based placeholders) for WhatsApp templates, e.g. ["Alice","123"] for {{1}},{{2}}.
+        /// Stored per-step because click-triggered CTA sends don't have campaign-time personalization context.
+        /// </summary>
+        public string? BodyParamsJson { get; set; }
+
+        /// <summary>
+        /// JSON array of URL-button parameter values (max 3). Index 0 => button index "0" (position 1), etc.
+        /// Used only for templates with dynamic URL buttons (ParameterValue contains "{{n}}").
+        /// Stored per-step so CTA runtime can satisfy Meta's required button parameters on click-triggered sends.
+        /// </summary>
+        public string? UrlButtonParamsJson { get; set; }
+
         public int StepOrder { get; set; }
 
         public string? RequiredTag { get; set; }        // e.g., "interested"

@@ -80,13 +80,47 @@ namespace xbytechat.api.Features.ESU.Facebook.Controllers
 
         // -------- OAUTH CALLBACK (PUBLIC) --------
 
+        //[HttpGet("callback")]
+        //[AllowAnonymous]
+        //[DisableRateLimiting]
+        //public async Task<IActionResult> Callback(
+        //    [FromQuery] string? code,
+        //    [FromQuery] string? state,
+        //    CancellationToken ct)
+        //{
+        //    Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
+        //    Response.Headers["Pragma"] = "no-cache";
+
+        //    string Target(string q) => $"{_uiBase}/app/welcomepage{q}";
+
+        //    if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(state))
+        //    {
+        //        _log.LogWarning("ESU callback missing parameters. codeNull={CodeNull} stateNull={StateNull}",
+        //            string.IsNullOrWhiteSpace(code), string.IsNullOrWhiteSpace(state));
+        //        return Redirect(Target("?error=missing_code_or_state"));
+        //    }
+
+        //    try
+        //    {
+        //        await _service.HandleCallbackAsync(code!, state!, ct);
+        //        _log.LogInformation("ESU callback success for state={State}", state);
+        //        //return Redirect(Target("?connected=1"));
+        //        return Redirect(Target("?esuStatus=success"));
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        _log.LogError(ex, "ESU callback failed for state={State}", state);
+        //        // return Redirect(Target("?error=oauth_exchange_failed"));
+        //        return Redirect(Target("?esuStatus=failed&error=oauth_exchange_failed"));
+        //    }
+        //}
         [HttpGet("callback")]
         [AllowAnonymous]
         [DisableRateLimiting]
         public async Task<IActionResult> Callback(
-            [FromQuery] string? code,
-            [FromQuery] string? state,
-            CancellationToken ct)
+    [FromQuery] string? code,
+    [FromQuery] string? state,
+    CancellationToken ct)
         {
             Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
             Response.Headers["Pragma"] = "no-cache";
@@ -95,22 +129,58 @@ namespace xbytechat.api.Features.ESU.Facebook.Controllers
 
             if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(state))
             {
-                _log.LogWarning("ESU callback missing parameters. codeNull={CodeNull} stateNull={StateNull}",
-                    string.IsNullOrWhiteSpace(code), string.IsNullOrWhiteSpace(state));
-                return Redirect(Target("?error=missing_code_or_state"));
+                _log.LogWarning(
+                    "ESU callback missing parameters. codeNull={CodeNull} stateNull={StateNull}",
+                    string.IsNullOrWhiteSpace(code),
+                    string.IsNullOrWhiteSpace(state));
+
+                return Redirect(Target("?esuStatus=failed&error=missing_code_or_state"));
             }
 
             try
             {
                 await _service.HandleCallbackAsync(code!, state!, ct);
                 _log.LogInformation("ESU callback success for state={State}", state);
-                return Redirect(Target("?connected=1"));
+
+                return Redirect(Target("?esuStatus=success"));
             }
             catch (Exception ex)
             {
                 _log.LogError(ex, "ESU callback failed for state={State}", state);
-                return Redirect(Target("?error=oauth_exchange_failed"));
+                return Redirect(Target("?esuStatus=failed&error=oauth_exchange_failed"));
             }
+        }
+        // -- Set two factor verification ---
+
+    //    [HttpPost("register-number")]
+    //    public async Task<IActionResult> RegisterPhoneNumber(
+    //[FromBody] RegisterPhoneNumberDto dto,
+    //CancellationToken ct)
+    //    {
+    //        var businessId = User.GetBusinessId();
+    //        if (businessId == Guid.Empty)
+    //            return Unauthorized();
+
+    //        await _service.RegisterPhoneNumberAsync(
+    //            businessId,
+    //            dto.Pin,
+    //            ct);
+
+    //        return Ok(new { ok = true });
+    //    }
+        [HttpPost("register-number")]
+        public async Task<IActionResult> RegisterPhoneNumber([FromBody] RegisterPhoneNumberDto dto, CancellationToken ct)
+        {
+            var businessId = User.GetBusinessId();
+            if (businessId == Guid.Empty) return Unauthorized();
+
+            await _service.RegisterPhoneNumberAsync(businessId, dto.Pin, ct);
+            return Ok(new { ok = true });
+        }
+
+        public sealed class RegisterPhoneNumberDto
+        {
+            public string Pin { get; set; } = default!; // 6 digits
         }
 
         // -------- DISCONNECT (FULL DEAUTHORIZE) --------

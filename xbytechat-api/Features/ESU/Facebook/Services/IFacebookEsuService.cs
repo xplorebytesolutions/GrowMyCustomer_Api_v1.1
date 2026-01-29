@@ -12,5 +12,9 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
         Task DisconnectAsync(Guid businessId, CancellationToken ct = default);
         Task FullDeleteAsync(Guid businessId, CancellationToken ct = default);
 
+        Task RegisterPhoneNumberAsync(Guid businessId, string pin, CancellationToken ct);
+
+
     }
 }
+

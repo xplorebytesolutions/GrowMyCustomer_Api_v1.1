@@ -1,5 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Serilog;
+using System.Text.RegularExpressions;
+using System.Text.Json;
 using xbytechat.api.Features.CTAFlowBuilder.DTOs;
 using xbytechat.api.Features.CTAFlowBuilder.Models;
 using xbytechat.api.Features.MessagesEngine.DTOs;
@@ -89,6 +91,9 @@ namespace xbytechat.api.Features.CTAFlowBuilder.Services
                         StepOrder = orderIndex++,
                         TemplateToSend = node.TemplateName,
                         TemplateType = node.TemplateType ?? "UNKNOWN",
+                        HeaderMediaUrl = string.IsNullOrWhiteSpace(node.HeaderMediaUrl) ? null : node.HeaderMediaUrl.Trim(),
+                        BodyParamsJson = SerializeBodyParams(node.BodyParams),
+                        UrlButtonParamsJson = SerializeUrlButtonParams(node.UrlButtonParams),
                         TriggerButtonText = node.TriggerButtonText ?? "",
                         TriggerButtonType = node.TriggerButtonType ?? "cta",
                         PositionX = node.PositionX == 0 ? Random.Shared.Next(100, 600) : node.PositionX,
@@ -256,32 +261,59 @@ namespace xbytechat.api.Features.CTAFlowBuilder.Services
                 }
             }
 
-            var nodes = flow.Steps.Select(step =>
-            {
-                templateMap.TryGetValue(step.TemplateToSend ?? "", out var tpl);
+                var nodes = flow.Steps.Select(step =>
+                {
+                    templateMap.TryGetValue(step.TemplateToSend ?? "", out var tpl);
 
                 var dbLinks = step.ButtonLinks ?? new List<FlowButtonLink>();
-                var dbButtons = dbLinks
-                    .OrderBy(b => b.ButtonIndex)
-                    .Select(link => new LinkButtonDto
-                    {
-                        Text = link.ButtonText,
-                        Type = link.ButtonType,
-                        SubType = link.ButtonSubType,
-                        Value = link.ButtonValue,
-                        Index = link.ButtonIndex,
-                        TargetNodeId = link.NextStepId?.ToString()
-                    });
+                var linkByIndex = dbLinks.ToDictionary(l => (int)l.ButtonIndex, l => l);
 
-                var templateButtons = (tpl?.ButtonParams ?? new List<ButtonMetadataDto>())
-                    .Where(btn => !dbLinks.Any(bl => string.Equals(bl.ButtonText, btn.Text, StringComparison.OrdinalIgnoreCase)))
-                    .Select(btn => new LinkButtonDto { Text = btn.Text });
+                // Canonical button list (max 3) in index order. This is important for dynamic URL button params,
+                // which are indexed by button position ("0","1","2") in Meta payloads.
+                // For linked buttons, preserve stored ButtonText so ReactFlow edges rehydrate (SourceHandle matches).
+                var buttons = (tpl?.ButtonParams ?? new List<ButtonMetadataDto>())
+                    .OrderBy(b => b.Index)
+                    .Take(3)
+                    .Select(btn =>
+                    {
+                        var idx = btn.Index;
+                        if (idx < 0 || idx > 2) return null;
+
+                        if (linkByIndex.TryGetValue(idx, out var link))
+                        {
+                            return new LinkButtonDto
+                            {
+                                Text = link.ButtonText,
+                                Type = link.ButtonType,
+                                SubType = link.ButtonSubType,
+                                Value = link.ButtonValue,
+                                Index = link.ButtonIndex,
+                                TargetNodeId = link.NextStepId?.ToString()
+                            };
+                        }
+
+                        return new LinkButtonDto
+                        {
+                            Text = btn.Text,
+                            Type = btn.Type,
+                            SubType = btn.SubType,
+                            Value = btn.ParameterValue,
+                            Index = idx,
+                            TargetNodeId = null
+                        };
+                    })
+                    .Where(x => x != null)
+                    .Select(x => x!)
+                    .ToList();
 
                 return new FlowNodeDto
                 {
                     Id = step.Id.ToString(),
                     TemplateName = step.TemplateToSend,
                     TemplateType = step.TemplateType,
+                    HeaderMediaUrl = step.HeaderMediaUrl,
+                    BodyParams = TryParseBodyParams(step.BodyParamsJson),
+                    UrlButtonParams = TryParseUrlButtonParams(step.UrlButtonParamsJson),
                     MessageBody = string.IsNullOrWhiteSpace(tpl?.Body) ? "— no body found —" : tpl!.Body,
                     TriggerButtonText = step.TriggerButtonText,
                     TriggerButtonType = step.TriggerButtonType,
@@ -291,7 +323,7 @@ namespace xbytechat.api.Features.CTAFlowBuilder.Services
                     RequiredSource = step.RequiredSource,
                     UseProfileName = step.UseProfileName,
                     ProfileNameSlot = step.ProfileNameSlot,
-                    Buttons = dbButtons.Concat(templateButtons).ToList()
+                    Buttons = buttons
                 };
             }).ToList();
 
@@ -337,6 +369,9 @@ namespace xbytechat.api.Features.CTAFlowBuilder.Services
                                 s.StepOrder,
                                 s.TemplateToSend,
                                 s.TemplateType,
+                                s.HeaderMediaUrl,
+                                s.BodyParamsJson,
+                                s.UrlButtonParamsJson,
                                 s.TriggerButtonText,
                                 s.TriggerButtonType,
                                 s.PositionX,
@@ -371,6 +406,9 @@ namespace xbytechat.api.Features.CTAFlowBuilder.Services
                     positionY = s.PositionY ?? 0,
                     templateName = s.TemplateToSend,
                     templateType = s.TemplateType,
+                    headerMediaUrl = s.HeaderMediaUrl,
+                    bodyParams = TryParseBodyParams(s.BodyParamsJson),
+                    urlButtonParams = TryParseUrlButtonParams(s.UrlButtonParamsJson),
                     triggerButtonText = s.TriggerButtonText ?? string.Empty,
                     triggerButtonType = s.TriggerButtonType ?? "cta",
                     requiredTag = string.Empty,
@@ -412,6 +450,57 @@ namespace xbytechat.api.Features.CTAFlowBuilder.Services
             {
                 Log.Error(ex, "❌ Exception while loading visual flow {FlowId}", flowId);
                 return ResponseResult.ErrorInfo("Internal error while loading flow.");
+            }
+        }
+
+        private static string? SerializeBodyParams(List<string>? bodyParams)
+        {
+            if (bodyParams == null || bodyParams.Count == 0) return null;
+
+            // Persist trimmed values; keep empty strings (runtime/publish validation decides if that's allowed).
+            var cleaned = bodyParams.Select(x => (x ?? string.Empty).Trim()).ToList();
+            return JsonSerializer.Serialize(cleaned);
+        }
+
+        private static List<string> TryParseBodyParams(string? json)
+        {
+            if (string.IsNullOrWhiteSpace(json)) return new List<string>();
+            try
+            {
+                var list = JsonSerializer.Deserialize<List<string>>(json);
+                return list ?? new List<string>();
+            }
+            catch
+            {
+                // Keep flow load resilient even if older rows contain malformed data.
+                return new List<string>();
+            }
+        }
+
+        private static string? SerializeUrlButtonParams(List<string>? urlButtonParams)
+        {
+            if (urlButtonParams == null || urlButtonParams.Count == 0) return null;
+
+            // Meta supports up to 3 buttons. Persist trimmed values; keep empty strings (validation decides if that's allowed).
+            var cleaned = urlButtonParams
+                .Take(3)
+                .Select(x => (x ?? string.Empty).Trim())
+                .ToList();
+
+            return JsonSerializer.Serialize(cleaned);
+        }
+
+        private static List<string> TryParseUrlButtonParams(string? json)
+        {
+            if (string.IsNullOrWhiteSpace(json)) return new List<string>();
+            try
+            {
+                var list = JsonSerializer.Deserialize<List<string>>(json);
+                return list ?? new List<string>();
+            }
+            catch
+            {
+                return new List<string>();
             }
         }
 
@@ -515,17 +604,484 @@ namespace xbytechat.api.Features.CTAFlowBuilder.Services
         // ---------------------------
         // PUBLISH (by id, flip flag)
         // ---------------------------
-        public async Task<bool> PublishFlowAsync(Guid flowId, Guid businessId, string user)
+        public async Task<ResponseResult> PublishFlowAsync(Guid flowId, Guid businessId, string user)
         {
             var flow = await _context.CTAFlowConfigs
-                .FirstOrDefaultAsync(f => f.Id == flowId && f.BusinessId == businessId);
+                .Include(f => f.Steps)
+                .FirstOrDefaultAsync(f => f.Id == flowId && f.BusinessId == businessId && f.IsActive);
 
-            if (flow is null) return false;
+            if (flow is null) return ResponseResult.NotFound("❌ Flow not found.");
+
+            // Server-side guardrails: publishing must be safe even if UI validation is bypassed.
+            // Validate required media header URL, body placeholder params, and dynamic URL button params.
+            var issues = await ValidateFlowForPublishAsync(flow, businessId);
+            if (issues.Count > 0)
+            {
+                Log.Warning(
+                    "❌ CTAFlow publish blocked: validation failed biz={Biz} flow={Flow} issues={Count} first='{First}'",
+                    businessId, flowId, issues.Count, issues[0]);
+
+                return ResponseResult.BadRequest(
+                    "❌ Publish blocked: fix configuration issues in one or more steps.",
+                    payload: issues);
+            }
 
             flow.IsPublished = true;
             flow.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
-            return true;
+            return ResponseResult.Ok("✅ Flow published.");
+        }
+
+        // ----- Publish-time validation helpers (best-effort; must not throw) -----
+        private static readonly Regex PositionalToken =
+            new(@"\{\{\s*\d+\s*\}\}", RegexOptions.Compiled); // {{1}}, {{ 2 }}, etc.
+
+        private static readonly Regex NamedToken =
+            new(@"\{\{\s*\}\}", RegexOptions.Compiled);        // {{}} (NAMED format slot)
+
+        private static int CountBodyTokensFlexible(string? text)
+        {
+            if (string.IsNullOrEmpty(text)) return 0;
+            return PositionalToken.Matches(text).Count + NamedToken.Matches(text).Count;
+        }
+
+        private static bool IsValidHttpsUrl(string? input)
+        {
+            if (string.IsNullOrWhiteSpace(input)) return false;
+            if (!Uri.TryCreate(input.Trim(), UriKind.Absolute, out var u)) return false;
+            return string.Equals(u.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private async Task<List<string>> ValidateFlowForPublishAsync(CTAFlowConfig flow, Guid businessId)
+        {
+            var issues = new List<string>();
+
+            try
+            {
+                var steps = (flow.Steps ?? new List<CTAFlowStep>())
+                    .OrderBy(s => s.StepOrder)
+                    .ToList();
+
+                if (steps.Count == 0)
+                {
+                    issues.Add("Flow has no steps.");
+                    return issues;
+                }
+
+                var templateNames = steps
+                    .Select(s => (s.TemplateToSend ?? string.Empty).Trim())
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                // Load template meta (buttons, header kind, body text) once per template.
+                var metaMap = new Dictionary<string, TemplateMetadataDto>(StringComparer.OrdinalIgnoreCase);
+                foreach (var name in templateNames)
+                {
+                    try
+                    {
+                        var meta = await _templateFetcherService.GetTemplateByNameAsync(
+                            businessId, name, includeButtons: true);
+                        if (meta != null) metaMap[name] = meta;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning(ex, "⚠️ CTAFlow publish validation: failed to fetch meta for {Template}", name);
+                    }
+                }
+
+                // Canonical body var counts (buttons are separate). If missing, fall back to token counting.
+                var bodyCounts = await _context.WhatsAppTemplates
+                    .AsNoTracking()
+                    .Where(t => t.BusinessId == businessId && t.IsActive && templateNames.Contains(t.Name))
+                    .GroupBy(t => t.Name)
+                    .Select(g => new { Name = g.Key, BodyVarCount = g.Max(x => x.BodyVarCount) })
+                    .ToListAsync();
+
+                var bodyCountMap = bodyCounts.ToDictionary(x => x.Name, x => x.BodyVarCount, StringComparer.OrdinalIgnoreCase);
+
+                foreach (var step in steps)
+                {
+                    var stepLabel = $"Step {step.StepOrder + 1}";
+                    var templateName = (step.TemplateToSend ?? string.Empty).Trim();
+
+                    if (string.IsNullOrWhiteSpace(templateName))
+                    {
+                        issues.Add($"{stepLabel}: missing template.");
+                        continue;
+                    }
+
+                    if (!metaMap.TryGetValue(templateName, out var meta) || meta == null)
+                    {
+                        issues.Add($"{stepLabel} ({templateName}): template not found/approved for this business.");
+                        continue;
+                    }
+
+                    // Header media URL required for image/video/document templates
+                    var headerKind = (meta.HeaderKind ?? "none").Trim().ToLowerInvariant();
+                    var requiresMediaHeader = headerKind is "image" or "video" or "document";
+                    if (requiresMediaHeader && !IsValidHttpsUrl(step.HeaderMediaUrl))
+                    {
+                        issues.Add($"{stepLabel} ({templateName}): header media URL required (https) for {headerKind} template.");
+                    }
+
+                    // Body placeholder params
+                    var bodyVarCount = 0;
+                    if (bodyCountMap.TryGetValue(templateName, out var c) && c > 0) bodyVarCount = c;
+                    else bodyVarCount = CountBodyTokensFlexible(meta.Body);
+
+                    if (bodyVarCount > 0)
+                    {
+                        var args = TryParseBodyParams(step.BodyParamsJson);
+                        var slot = step.UseProfileName ? (step.ProfileNameSlot ?? 0) : 0;
+
+                        for (var i = 1; i <= bodyVarCount; i++)
+                        {
+                            if (slot == i) continue; // profile name slot is runtime-filled
+
+                            var v = (i - 1) < args.Count ? args[i - 1] : null;
+                            if (string.IsNullOrWhiteSpace(v))
+                            {
+                                issues.Add($"{stepLabel} ({templateName}): missing body value for {{{{{i}}}}}.");
+                                break;
+                            }
+                        }
+                    }
+
+                    // Dynamic URL button params
+                    if (meta.ButtonParams is { Count: > 0 })
+                    {
+                        var stored = TryParseUrlButtonParams(step.UrlButtonParamsJson);
+                        var buttons = meta.ButtonParams
+                            .OrderBy(b => b.Index)
+                            .Take(3)
+                            .ToList();
+
+                        foreach (var b in buttons)
+                        {
+                            var idx = b.Index;
+                            if (idx < 0 || idx > 2) continue;
+
+                            var isUrl =
+                                string.Equals(b.Type, "URL", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(b.SubType, "url", StringComparison.OrdinalIgnoreCase);
+                            if (!isUrl) continue;
+
+                            var mask = (b.ParameterValue ?? string.Empty).Trim();
+                            var isDynamic = mask.Contains("{{", StringComparison.Ordinal);
+                            if (!isDynamic) continue;
+
+                            var value = (idx < stored.Count ? stored[idx] : null) ?? string.Empty;
+                            if (string.IsNullOrWhiteSpace(value))
+                            {
+                                var bt = string.IsNullOrWhiteSpace(b.Text) ? $"button {idx + 1}" : $"'{b.Text}'";
+                                issues.Add($"{stepLabel} ({templateName}): missing dynamic URL param for {bt}.");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // Never block publish due to validation code crashing; instead, allow publish and log loudly.
+                // (Runtime still has hard checks + FlowExecutionLogs failures.)
+                Log.Error(ex, "❌ CTAFlow publish validation crashed; allowing publish as fallback biz={Biz} flow={Flow}", businessId, flow.Id);
+                issues.Clear();
+            }
+
+            return issues;
+        }
+
+        // ---------------------------
+        // UPDATE (save as draft by id)
+        // ---------------------------
+        public async Task<FlowUpdateResult> UpdateVisualFlowAsync(
+            Guid flowId,
+            SaveVisualFlowDto dto,
+            Guid businessId,
+            string user)
+        {
+            try
+            {
+                if (dto.Nodes == null || !dto.Nodes.Any())
+                    return new FlowUpdateResult { Status = "error", Message = "❌ Cannot save an empty flow. Please add at least one step." };
+
+                var trimmedName = (dto.FlowName ?? string.Empty).Trim();
+                if (trimmedName.Length == 0)
+                    return new FlowUpdateResult { Status = "error", Message = "❌ Flow name is required." };
+
+                var flow = await _context.CTAFlowConfigs
+                    .Include(f => f.Steps)
+                        .ThenInclude(s => s.ButtonLinks)
+                    .FirstOrDefaultAsync(f => f.Id == flowId && f.BusinessId == businessId && f.IsActive);
+
+                if (flow == null)
+                    return new FlowUpdateResult { Status = "notFound", Message = "❌ Flow not found." };
+
+                // If a live/published flow is attached, force fork to avoid changing active campaigns.
+                if (flow.IsPublished)
+                {
+                    var attachedCount = await _context.Campaigns
+                        .Where(c => c.BusinessId == businessId && !c.IsDeleted && c.CTAFlowConfigId == flowId)
+                        .CountAsync();
+
+                    if (attachedCount > 0)
+                    {
+                        var campaigns = await GetAttachedCampaignsAsync(flowId, businessId);
+                        return new FlowUpdateResult
+                        {
+                            Status = "requiresFork",
+                            Message = "❌ This published flow is attached to campaign(s). Create a new draft version to edit.",
+                            Campaigns = campaigns
+                        };
+                    }
+                }
+
+                // Enforce unique active name per business (excluding current flow)
+                var nameExists = await _context.CTAFlowConfigs
+                    .AnyAsync(f => f.BusinessId == businessId &&
+                                   f.IsActive &&
+                                   f.FlowName == trimmedName &&
+                                   f.Id != flowId);
+
+                if (nameExists)
+                    return new FlowUpdateResult { Status = "error", Message = "❌ A flow with this name already exists." };
+
+                var needsRepublish = flow.IsPublished;
+
+                await using var tx = await _context.Database.BeginTransactionAsync();
+
+                // Update config and flip to draft on any edit
+                flow.FlowName = trimmedName;
+                flow.IsPublished = false;
+                flow.UpdatedAt = DateTime.UtcNow;
+
+                // Remove existing steps + links (we re-materialize from the visual payload)
+                foreach (var s in flow.Steps)
+                    _context.FlowButtonLinks.RemoveRange(s.ButtonLinks);
+
+                _context.CTAFlowSteps.RemoveRange(flow.Steps);
+                await _context.SaveChangesAsync();
+
+                // Recreate steps from nodes (preserve ids when possible)
+                var stepMap = new Dictionary<string, CTAFlowStep>(StringComparer.OrdinalIgnoreCase);
+                var orderIndex = 0;
+
+                foreach (var node in dto.Nodes)
+                {
+                    if (string.IsNullOrWhiteSpace(node.Id)) continue;
+
+                    var stepId = Guid.TryParse(node.Id, out var gid) ? gid : Guid.NewGuid();
+
+                    var step = new CTAFlowStep
+                    {
+                        Id = stepId,
+                        CTAFlowConfigId = flow.Id,
+                        StepOrder = orderIndex++,
+                        TemplateToSend = node.TemplateName,
+                        TemplateType = node.TemplateType ?? "UNKNOWN",
+                        HeaderMediaUrl = string.IsNullOrWhiteSpace(node.HeaderMediaUrl) ? null : node.HeaderMediaUrl.Trim(),
+                        BodyParamsJson = SerializeBodyParams(node.BodyParams),
+                        UrlButtonParamsJson = SerializeUrlButtonParams(node.UrlButtonParams),
+                        TriggerButtonText = node.TriggerButtonText ?? "",
+                        TriggerButtonType = node.TriggerButtonType ?? "cta",
+                        PositionX = node.PositionX == 0 ? Random.Shared.Next(100, 600) : node.PositionX,
+                        PositionY = node.PositionY == 0 ? Random.Shared.Next(100, 400) : node.PositionY,
+                        UseProfileName = node.UseProfileName,
+                        ProfileNameSlot = node.ProfileNameSlot,
+                        ButtonLinks = new List<FlowButtonLink>()
+                    };
+
+                    // Only text templates may use profile name slot
+                    var isTextTemplate = string.Equals(step.TemplateType, "text_template", StringComparison.OrdinalIgnoreCase);
+                    if (!isTextTemplate)
+                    {
+                        step.UseProfileName = false;
+                        step.ProfileNameSlot = null;
+                    }
+                    else if (!step.UseProfileName)
+                    {
+                        step.ProfileNameSlot = null;
+                    }
+                    else if (!step.ProfileNameSlot.HasValue || step.ProfileNameSlot.Value < 1)
+                    {
+                        step.ProfileNameSlot = 1;
+                    }
+
+                    stepMap[node.Id] = step;
+                    _context.CTAFlowSteps.Add(step);
+                }
+
+                // Wire links per node via edges (SourceHandle == button text)
+                var edges = dto.Edges ?? new List<FlowEdgeDto>();
+
+                foreach (var node in dto.Nodes)
+                {
+                    if (string.IsNullOrWhiteSpace(node.Id) || !stepMap.TryGetValue(node.Id, out var fromStep))
+                        continue;
+
+                    var outEdges = edges
+                        .Where(e => string.Equals(e.FromNodeId, node.Id, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                    var seenTexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var orderedButtons = (node.Buttons ?? new List<LinkButtonDto>())
+                        .OrderBy(b => b.Index < 0 ? int.MaxValue : b.Index)
+                        .ThenBy(b => b.Text ?? string.Empty)
+                        .ToList();
+
+                    short nextIdx = 0;
+
+                    foreach (var btn in orderedButtons)
+                    {
+                        var text = (btn.Text ?? string.Empty).Trim();
+                        if (string.IsNullOrEmpty(text)) continue;
+                        if (!seenTexts.Add(text)) continue; // dedupe
+
+                        var edge = outEdges.FirstOrDefault(e =>
+                            string.Equals(e.SourceHandle ?? string.Empty, text, StringComparison.OrdinalIgnoreCase));
+                        if (edge == null) continue;
+
+                        if (!stepMap.TryGetValue(edge.ToNodeId, out var toStep)) continue;
+
+                        var finalIndex = btn.Index >= 0 ? btn.Index : nextIdx;
+                        nextIdx = (short)(finalIndex + 1);
+
+                        var link = new FlowButtonLink
+                        {
+                            Id = Guid.NewGuid(),
+                            CTAFlowStepId = fromStep.Id,
+                            NextStepId = toStep.Id,
+                            ButtonText = text,
+                            ButtonType = string.IsNullOrWhiteSpace(btn.Type) ? "QUICK_REPLY" : btn.Type,
+                            ButtonSubType = btn.SubType ?? string.Empty,
+                            ButtonValue = btn.Value ?? string.Empty,
+                            ButtonIndex = (short)finalIndex
+                        };
+
+                        _context.FlowButtonLinks.Add(link);
+                        fromStep.ButtonLinks.Add(link);
+
+                        // convenience: populate target's trigger info
+                        toStep.TriggerButtonText = text;
+                        toStep.TriggerButtonType = (btn.Type ?? "QUICK_REPLY").ToLowerInvariant();
+                    }
+                }
+
+                await _context.SaveChangesAsync();
+                await tx.CommitAsync();
+
+                return new FlowUpdateResult
+                {
+                    Status = "ok",
+                    NeedsRepublish = needsRepublish,
+                    Message = "✅ Flow updated (draft)."
+                };
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "❌ Exception while updating visual flow {FlowId}", flowId);
+                return new FlowUpdateResult { Status = "error", Message = "❌ Internal error while updating flow." };
+            }
+        }
+
+        // ---------------------------
+        // FORK (create new draft copy)
+        // ---------------------------
+        public async Task<Guid> ForkFlowAsync(Guid flowId, Guid businessId, string user)
+        {
+            try
+            {
+                var src = await _context.CTAFlowConfigs
+                    .Include(f => f.Steps)
+                        .ThenInclude(s => s.ButtonLinks)
+                    .FirstOrDefaultAsync(f => f.Id == flowId && f.BusinessId == businessId && f.IsActive);
+
+                if (src == null) return Guid.Empty;
+
+                // Ensure unique name (unique index on BusinessId+FlowName+IsActive)
+                var baseName = $"{src.FlowName} (Copy)";
+                var candidate = baseName;
+                var n = 2;
+                while (await _context.CTAFlowConfigs.AnyAsync(f =>
+                           f.BusinessId == businessId && f.IsActive && f.FlowName == candidate))
+                {
+                    candidate = $"{baseName} {n++}";
+                }
+
+                await using var tx = await _context.Database.BeginTransactionAsync();
+
+                var dst = new CTAFlowConfig
+                {
+                    Id = Guid.NewGuid(),
+                    BusinessId = businessId,
+                    FlowName = candidate,
+                    CreatedBy = user,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                    IsActive = true,
+                    IsPublished = false
+                };
+                _context.CTAFlowConfigs.Add(dst);
+
+                var stepIdMap = new Dictionary<Guid, Guid>();
+                foreach (var s in src.Steps.OrderBy(x => x.StepOrder))
+                    stepIdMap[s.Id] = Guid.NewGuid();
+
+                var newSteps = src.Steps.OrderBy(x => x.StepOrder).Select(s => new CTAFlowStep
+                {
+                    Id = stepIdMap[s.Id],
+                    CTAFlowConfigId = dst.Id,
+                    StepOrder = s.StepOrder,
+                    TemplateToSend = s.TemplateToSend,
+                    TemplateType = s.TemplateType,
+                    HeaderMediaUrl = s.HeaderMediaUrl,
+                    BodyParamsJson = s.BodyParamsJson,
+                    UrlButtonParamsJson = s.UrlButtonParamsJson,
+                    TriggerButtonText = s.TriggerButtonText,
+                    TriggerButtonType = s.TriggerButtonType,
+                    RequiredTag = s.RequiredTag,
+                    RequiredSource = s.RequiredSource,
+                    PositionX = s.PositionX,
+                    PositionY = s.PositionY,
+                    UseProfileName = s.UseProfileName,
+                    ProfileNameSlot = s.ProfileNameSlot
+                }).ToList();
+
+                _context.CTAFlowSteps.AddRange(newSteps);
+
+                foreach (var srcStep in src.Steps)
+                {
+                    foreach (var b in srcStep.ButtonLinks)
+                    {
+                        var newLink = new FlowButtonLink
+                        {
+                            Id = Guid.NewGuid(),
+                            CTAFlowStepId = stepIdMap[srcStep.Id],
+                            NextStepId = (b.NextStepId.HasValue && stepIdMap.TryGetValue(b.NextStepId.Value, out var mapped))
+                                ? mapped
+                                : (Guid?)null,
+                            ButtonText = b.ButtonText,
+                            ButtonType = b.ButtonType,
+                            ButtonSubType = b.ButtonSubType,
+                            ButtonValue = b.ButtonValue,
+                            ButtonIndex = b.ButtonIndex
+                        };
+                        _context.FlowButtonLinks.Add(newLink);
+                    }
+                }
+
+                await _context.SaveChangesAsync();
+                await tx.CommitAsync();
+
+                return dst.Id;
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "❌ Exception while forking flow {FlowId}", flowId);
+                return Guid.Empty;
+            }
         }
 
         // ---------------------------

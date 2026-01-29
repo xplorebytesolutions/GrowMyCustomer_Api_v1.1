@@ -1892,14 +1892,73 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     return ResponseResult.ErrorInfo(
                         "❌ Missing PhoneNumberId for META_CLOUD. Configure a default sender or pass PhoneNumberId.");
 
-                // Build minimal components (body only)
+                // Build components (header + body + dynamic URL buttons)
+                var components = new List<object>();
+
+                var headerKind = (dto.HeaderKind ?? string.Empty).Trim().ToLowerInvariant();
+                var headerUrl = string.IsNullOrWhiteSpace(dto.HeaderMediaUrl) ? null : dto.HeaderMediaUrl!.Trim();
+
+                if (!string.IsNullOrWhiteSpace(headerUrl))
+                {
+                    if (headerKind == "image")
+                    {
+                        components.Add(new
+                        {
+                            type = "header",
+                            parameters = new object[]
+                            {
+                                new { type = "image", image = new { link = headerUrl } }
+                            }
+                        });
+                    }
+                    else if (headerKind == "video")
+                    {
+                        components.Add(new
+                        {
+                            type = "header",
+                            parameters = new object[]
+                            {
+                                new { type = "video", video = new { link = headerUrl } }
+                            }
+                        });
+                    }
+                    else if (headerKind == "document")
+                    {
+                        components.Add(new
+                        {
+                            type = "header",
+                            parameters = new object[]
+                            {
+                                new { type = "document", document = new { link = headerUrl } }
+                            }
+                        });
+                    }
+                }
+
                 var parameters = (dto.TemplateParameters ?? new List<string>())
                     .Select(p => new { type = "text", text = p })
                     .ToArray();
 
-                var components = new List<object>();
                 if (parameters.Length > 0)
                     components.Add(new { type = "body", parameters });
+
+                var urlParams = dto.UrlButtonParams ?? new List<string>();
+                for (int i = 0; i < urlParams.Count && i < 3; i++)
+                {
+                    var p = (urlParams[i] ?? string.Empty).Trim();
+                    if (string.IsNullOrWhiteSpace(p)) continue;
+
+                    components.Add(new
+                    {
+                        type = "button",
+                        sub_type = "url",
+                        index = i.ToString(),
+                        parameters = new object[]
+                        {
+                            new { type = "text", text = p }
+                        }
+                    });
+                }
 
                 var lang = string.IsNullOrWhiteSpace(dto.LanguageCode) ? "en_US" : dto.LanguageCode!;
 
@@ -1940,6 +1999,7 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     BusinessId = businessId,
                     RecipientNumber = dto.RecipientNumber,
                     MessageContent = dto.TemplateName,
+                    MediaUrl = headerUrl,
                     RenderedBody = TemplateParameterHelper.FillPlaceholders(
                         dto.TemplateBody ?? string.Empty,
                         dto.TemplateParameters ?? new List<string>()),
@@ -1991,6 +2051,7 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                         BusinessId = businessId,
                         RecipientNumber = dto.RecipientNumber,
                         MessageContent = dto.TemplateName,
+                        MediaUrl = string.IsNullOrWhiteSpace(dto.HeaderMediaUrl) ? null : dto.HeaderMediaUrl.Trim(),
                         RenderedBody = TemplateParameterHelper.FillPlaceholders(
                             dto.TemplateBody ?? string.Empty,
                             dto.TemplateParameters ?? new List<string>()),

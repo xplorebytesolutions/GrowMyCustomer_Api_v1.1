@@ -16,6 +16,9 @@ using xbytechat.api.Features.CTAFlowBuilder.Services;
 using xbytechat.api.Features.CTAFlowBuilder.Models;
 using System.Text.Json.Serialization;
 using xbytechat.api.Features.MessagesEngine.Enums;
+using xbytechat.api.AuthModule.Models;
+using xbytechat.api.Features.CRM.Models;
+using xbytechat.api.WhatsAppSettings.DTOs;
 
 namespace xbytechat.api.Features.AutoReplyBuilder.Services
 {
@@ -617,12 +620,141 @@ namespace xbytechat.api.Features.AutoReplyBuilder.Services
                                 break;
                             }
 
+                            // Lookup template meta to validate header/buttons & keep language in sync.
+                            var templateRow = await _dbContext.Set<WhatsAppTemplate>()
+                                .AsNoTracking()
+                                .Where(t => t.BusinessId == businessId && t.IsActive && t.Name == templateName)
+                                .OrderByDescending(t => t.UpdatedAt)
+                                .FirstOrDefaultAsync(ct);
+
+                            var headerKind = (templateRow?.HeaderKind ?? "none").Trim().ToLowerInvariant();
+                            var languageCode = string.IsNullOrWhiteSpace(templateRow?.LanguageCode)
+                                ? "en_US"
+                                : templateRow!.LanguageCode!.Trim();
+
+                            // Body params ({{1}}, {{2}}, ...). Keep the list length stable.
+                            var rawBodyParams = cfg?.BodyParams ?? cfg?.Placeholders ?? new List<string>();
+                            var bodyParams = (rawBodyParams ?? new List<string>())
+                                .Select(p => p ?? string.Empty)
+                                .ToList();
+
+                            var expectedBodyVars = templateRow != null
+                                ? Math.Max(templateRow.BodyVarCount, 0)
+                                : bodyParams.Count;
+
+                            if (expectedBodyVars > 0)
+                            {
+                                if (bodyParams.Count < expectedBodyVars)
+                                {
+                                    bodyParams.AddRange(Enumerable.Repeat(string.Empty, expectedBodyVars - bodyParams.Count));
+                                }
+                                else if (bodyParams.Count > expectedBodyVars)
+                                {
+                                    bodyParams = bodyParams.Take(expectedBodyVars).ToList();
+                                }
+                            }
+                            else
+                            {
+                                // Template expects no body params; avoid sending extras.
+                                bodyParams = new List<string>();
+                            }
+
+                            // Optional: auto-fill one slot from contact profile/name
+                            if (cfg?.UseProfileName == true && bodyParams.Count > 0)
+                            {
+                                var slot = cfg.ProfileNameSlot ?? 1;
+                                slot = Math.Max(1, Math.Min(slot, bodyParams.Count));
+
+                                var contact = await _dbContext.Set<Contact>()
+                                    .AsNoTracking()
+                                    .FirstOrDefaultAsync(
+                                        c => c.Id == contactId && c.BusinessId == businessId,
+                                        ct);
+
+                                var displayName = (contact?.ProfileName ?? contact?.Name ?? string.Empty).Trim();
+                                if (string.IsNullOrWhiteSpace(displayName))
+                                    displayName = "there";
+
+                                bodyParams[slot - 1] = displayName;
+                            }
+
+                            // Header media URL (for image/video/document templates)
+                            var headerMediaUrl = (cfg?.HeaderMediaUrl ?? string.Empty).Trim();
+                            var needsHeaderUrl =
+                                headerKind == "image" || headerKind == "video" || headerKind == "document";
+
+                            if (needsHeaderUrl && !IsValidHttpsUrl(headerMediaUrl))
+                            {
+                                var msg = $"Missing/invalid HTTPS header URL for {headerKind} template '{templateName}'.";
+                                _logger.LogWarning(
+                                    "AutoReply template node {NodeId} in flow {FlowId} cannot send: {Message}",
+                                    node.Id,
+                                    flow.Id,
+                                    msg);
+
+                                await LogFlowStepAsync(
+                                    businessId,
+                                    flow,
+                                    node,
+                                    contactPhone,
+                                    messageLogId: null,
+                                    success: false,
+                                    errorMessage: msg,
+                                    templateName: templateName,
+                                    templateType: "AUTO_REPLY_TEMPLATE",
+                                    cancellationToken: ct);
+
+                                break;
+                            }
+
+                            // Dynamic URL button params (index 0..2) - validate required ones using cached template buttons.
+                            var rawUrlParams = cfg?.UrlButtonParams ?? new List<string>();
+                            var urlParams = new List<string>(capacity: 3)
+                            {
+                                rawUrlParams.Count > 0 ? (rawUrlParams[0] ?? string.Empty) : string.Empty,
+                                rawUrlParams.Count > 1 ? (rawUrlParams[1] ?? string.Empty) : string.Empty,
+                                rawUrlParams.Count > 2 ? (rawUrlParams[2] ?? string.Empty) : string.Empty,
+                            };
+
+                            var requiredUrlIndices = GetRequiredDynamicUrlButtonIndices(templateRow?.UrlButtons);
+                            var missingUrlIndex = requiredUrlIndices.FirstOrDefault(i => string.IsNullOrWhiteSpace(urlParams[i]));
+                            if (requiredUrlIndices.Count > 0 && requiredUrlIndices.Any(i => string.IsNullOrWhiteSpace(urlParams[i])))
+                            {
+                                var msg =
+                                    $"Missing dynamic URL button value for index {missingUrlIndex} on template '{templateName}'.";
+
+                                _logger.LogWarning(
+                                    "AutoReply template node {NodeId} in flow {FlowId} cannot send: {Message}",
+                                    node.Id,
+                                    flow.Id,
+                                    msg);
+
+                                await LogFlowStepAsync(
+                                    businessId,
+                                    flow,
+                                    node,
+                                    contactPhone,
+                                    messageLogId: null,
+                                    success: false,
+                                    errorMessage: msg,
+                                    templateName: templateName,
+                                    templateType: "AUTO_REPLY_TEMPLATE",
+                                    cancellationToken: ct);
+
+                                break;
+                            }
+
                             var dto = new SimpleTemplateMessageDto
                             {
                                 RecipientNumber = contactPhone,
                                 TemplateName = templateName!,
-                                TemplateParameters = new List<string>(),
-                                HasStaticButtons = false
+                                TemplateParameters = bodyParams,
+                                HasStaticButtons = false,
+                                TemplateBody = cfg?.Body ?? templateRow?.Body ?? string.Empty,
+                                LanguageCode = languageCode,
+                                HeaderKind = headerKind,
+                                HeaderMediaUrl = headerMediaUrl,
+                                UrlButtonParams = urlParams
                             };
 
                             _logger.LogInformation(
@@ -685,16 +817,22 @@ namespace xbytechat.api.Features.AutoReplyBuilder.Services
 
                     case "tag":
                         {
-                            var tags = cfg?.Tags
-                                        ?? cfg?.TagIds
-                                        ?? Array.Empty<string>();
+                            var (success, appliedTags, error) =
+                                await ApplyTagsToContactAsync(
+                                    businessId,
+                                    contactId,
+                                    contactPhone,
+                                    cfg,
+                                    node.ConfigJson,
+                                    ct);
 
-                            if (tags.Length == 0)
+                            if (!success)
                             {
                                 _logger.LogWarning(
-                                    "AutoReply tag node {NodeId} in flow {FlowId} has no tags configured.",
+                                    "AutoReply tag node {NodeId} in flow {FlowId} failed to apply tags. Reason: {Reason}.",
                                     node.Id,
-                                    flow.Id);
+                                    flow.Id,
+                                    error ?? "Unknown");
 
                                 await LogFlowStepAsync(
                                     businessId,
@@ -703,7 +841,7 @@ namespace xbytechat.api.Features.AutoReplyBuilder.Services
                                     contactPhone,
                                     messageLogId: null,
                                     success: false,
-                                    errorMessage: "No tags configured",
+                                    errorMessage: error ?? "Failed to apply tags",
                                     templateName: null,
                                     templateType: "AUTO_REPLY_TAG",
                                     cancellationToken: ct);
@@ -712,12 +850,12 @@ namespace xbytechat.api.Features.AutoReplyBuilder.Services
                             }
 
                             _logger.LogInformation(
-                                "🏷 AutoReply tag node {NodeId} in flow {FlowId} would apply tags: {Tags}.",
+                                "🏷 AutoReply tag node {NodeId} in flow {FlowId} applied tags: {Tags}.",
                                 node.Id,
                                 flow.Id,
-                                string.Join(",", tags));
+                                string.Join(",", appliedTags));
 
-                            pieces.Add($"[TAGS:{string.Join(",", tags)}]");
+                            pieces.Add($"[TAGS:{string.Join(",", appliedTags)}]");
 
                             await LogFlowStepAsync(
                                 businessId,
@@ -958,6 +1096,49 @@ namespace xbytechat.api.Features.AutoReplyBuilder.Services
             }
         }
 
+        private static bool IsValidHttpsUrl(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return false;
+            if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri)) return false;
+            return string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static IReadOnlyList<int> GetRequiredDynamicUrlButtonIndices(string? urlButtonsJson)
+        {
+            if (string.IsNullOrWhiteSpace(urlButtonsJson))
+                return Array.Empty<int>();
+
+            try
+            {
+                var options = new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                };
+
+                var btns = JsonSerializer.Deserialize<List<ButtonMetadataDto>>(urlButtonsJson, options)
+                           ?? new List<ButtonMetadataDto>();
+
+                return btns
+                    .Where(b =>
+                    {
+                        var type = (b.Type ?? string.Empty).Trim().ToUpperInvariant();
+                        var sub = (b.SubType ?? string.Empty).Trim().ToLowerInvariant();
+                        var isUrl = type == "URL" || sub == "url";
+                        var isDynamic = (b.ParameterValue ?? string.Empty).Contains("{{", StringComparison.Ordinal);
+                        return isUrl && isDynamic;
+                    })
+                    .Select(b => b.Index)
+                    .Where(i => i >= 0 && i <= 2)
+                    .Distinct()
+                    .OrderBy(i => i)
+                    .ToList();
+            }
+            catch
+            {
+                return Array.Empty<int>();
+            }
+        }
+
         // ----------------------------------------------------
         // Helpers – nodes / configs
         // ----------------------------------------------------
@@ -1044,6 +1225,249 @@ namespace xbytechat.api.Features.AutoReplyBuilder.Services
                 // If we cannot parse nodes, treat as no nodes.
                 return null;
             }
+        }
+
+        // ----------------------------------------------------
+        // Tag application helper (real DB write)
+        // ----------------------------------------------------
+        private async Task<(bool Success, string[] AppliedTags, string? ErrorMessage)> ApplyTagsToContactAsync(
+            Guid businessId,
+            Guid contactId,
+            string contactPhone,
+            AutoReplyNodeConfig? cfg,
+            string? rawConfigJson,
+            CancellationToken ct)
+        {
+            var rawNames = (cfg?.Tags ?? Array.Empty<string>()).ToList();
+            var rawIds = (cfg?.TagIds ?? Array.Empty<string>()).ToList();
+
+            // Back-compat: some older saved flows might have tags stored as a single string,
+            // e.g. { "tags": "vip, hot" } instead of { "tags": ["vip","hot"] }.
+            if (!string.IsNullOrWhiteSpace(rawConfigJson))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(rawConfigJson);
+                    if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                    {
+                        foreach (var prop in doc.RootElement.EnumerateObject())
+                        {
+                            var name = prop.Name ?? string.Empty;
+
+                            if (name.Equals("tags", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (prop.Value.ValueKind == JsonValueKind.String)
+                                {
+                                    var s = prop.Value.GetString() ?? string.Empty;
+                                    rawNames.AddRange(
+                                        s.Split(new[] { ',', ';', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
+                                         .Select(x => x.Trim())
+                                    );
+                                }
+                                else if (prop.Value.ValueKind == JsonValueKind.Array)
+                                {
+                                    foreach (var item in prop.Value.EnumerateArray())
+                                    {
+                                        if (item.ValueKind == JsonValueKind.String)
+                                            rawNames.Add(item.GetString() ?? string.Empty);
+                                    }
+                                }
+                            }
+
+                            if (name.Equals("tagIds", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (prop.Value.ValueKind == JsonValueKind.String)
+                                {
+                                    var s = prop.Value.GetString() ?? string.Empty;
+                                    rawIds.AddRange(
+                                        s.Split(new[] { ',', ';', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
+                                         .Select(x => x.Trim())
+                                    );
+                                }
+                                else if (prop.Value.ValueKind == JsonValueKind.Array)
+                                {
+                                    foreach (var item in prop.Value.EnumerateArray())
+                                    {
+                                        if (item.ValueKind == JsonValueKind.String)
+                                            rawIds.Add(item.GetString() ?? string.Empty);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    // ignore parse errors; configs can be arbitrary
+                }
+            }
+
+            var tagNames = rawNames
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .Select(t => t.Trim())
+                .Where(t => t.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var tagIds = rawIds
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .Select(t => t.Trim())
+                .Select(t => Guid.TryParse(t, out var g) ? g : Guid.Empty)
+                .Where(g => g != Guid.Empty)
+                .Distinct()
+                .ToList();
+
+            if (tagNames.Count == 0 && tagIds.Count == 0)
+            {
+                return (false, Array.Empty<string>(), "No tags configured");
+            }
+
+            Contact? contact = null;
+
+            if (contactId != Guid.Empty)
+            {
+                contact = await _dbContext.Contacts
+                    .Include(c => c.ContactTags)
+                    .FirstOrDefaultAsync(c =>
+                        c.Id == contactId &&
+                        c.BusinessId == businessId &&
+                        c.IsActive &&
+                        !c.IsArchived,
+                        ct);
+            }
+
+            // Fallback: if contact id wasn't provided or lookup failed, try phone.
+            if (contact == null && !string.IsNullOrWhiteSpace(contactPhone))
+            {
+                var phone = contactPhone.Trim();
+                contact = await _dbContext.Contacts
+                    .Include(c => c.ContactTags)
+                    .FirstOrDefaultAsync(c =>
+                        c.BusinessId == businessId &&
+                        c.IsActive &&
+                        !c.IsArchived &&
+                        c.PhoneNumber == phone,
+                        ct);
+            }
+
+            if (contact == null)
+            {
+                return (false, Array.Empty<string>(), "Contact not found");
+            }
+
+            var now = DateTime.UtcNow;
+            var existingTagIds = contact.ContactTags?.Select(ct => ct.TagId).ToHashSet() ?? new HashSet<Guid>();
+
+            var tagsToLink = new List<Tag>();
+
+            // 1) Resolve explicit TagIds (if builder ever stores ids)
+            if (tagIds.Count > 0)
+            {
+                var byId = await _dbContext.Tags
+                    .Where(t => t.BusinessId == businessId && t.IsActive && tagIds.Contains(t.Id))
+                    .ToListAsync(ct);
+                tagsToLink.AddRange(byId);
+            }
+
+            // 2) Resolve Tag names (create missing tags when needed)
+            if (tagNames.Count > 0)
+            {
+                var nameLowers = tagNames.Select(n => n.ToLowerInvariant()).ToList();
+
+                var existing = await _dbContext.Tags
+                    .Where(t => t.BusinessId == businessId && t.IsActive && nameLowers.Contains((t.Name ?? "").ToLower()))
+                    .ToListAsync(ct);
+
+                var existingByLower = existing
+                    .Where(t => !string.IsNullOrWhiteSpace(t.Name))
+                    .GroupBy(t => t.Name.Trim().ToLowerInvariant())
+                    .ToDictionary(g => g.Key, g => g.First());
+
+                foreach (var name in tagNames)
+                {
+                    var key = name.ToLowerInvariant();
+                    if (existingByLower.TryGetValue(key, out var found))
+                    {
+                        tagsToLink.Add(found);
+                        continue;
+                    }
+
+                    var created = new Tag
+                    {
+                        Id = Guid.NewGuid(),
+                        BusinessId = businessId,
+                        Name = name,
+                        ColorHex = "#8c8c8c",
+                        Category = "General",
+                        IsActive = true,
+                        CreatedAt = now,
+                        LastUsedAt = now
+                    };
+
+                    _dbContext.Tags.Add(created);
+                    tagsToLink.Add(created);
+                    existingByLower[key] = created;
+                }
+
+                await _dbContext.SaveChangesAsync(ct); // persist new tags before linking
+            }
+
+            tagsToLink = tagsToLink
+                .Where(t => t != null && t.BusinessId == businessId && t.IsActive)
+                .GroupBy(t => t.Id)
+                .Select(g => g.First())
+                .ToList();
+
+            if (tagsToLink.Count == 0)
+            {
+                return (false, Array.Empty<string>(), "No valid tags found for business");
+            }
+
+            contact.ContactTags ??= new List<ContactTag>();
+
+            foreach (var tag in tagsToLink)
+            {
+                tag.LastUsedAt = now;
+
+                if (existingTagIds.Contains(tag.Id))
+                    continue;
+
+                contact.ContactTags.Add(new ContactTag
+                {
+                    Id = Guid.NewGuid(),
+                    BusinessId = businessId,
+                    ContactId = contact.Id,
+                    TagId = tag.Id,
+                    AssignedAt = now,
+                    AssignedBy = "automation"
+                });
+
+                existingTagIds.Add(tag.Id);
+            }
+
+            try
+            {
+                await _dbContext.SaveChangesAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "AutoReply tag assignment failed. businessId={BusinessId}, contactId={ContactId}",
+                    businessId,
+                    contact.Id);
+
+                return (false, Array.Empty<string>(), "Failed to apply tags (DB error)");
+            }
+
+            var applied = tagsToLink
+                .Select(t => t.Name)
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Select(n => n.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            return (true, applied, null);
         }
 
         // ----------------------------------------------------
@@ -1215,6 +1639,14 @@ namespace xbytechat.api.Features.AutoReplyBuilder.Services
             public string? Text { get; set; }           // for "message" nodes
             public string? Body { get; set; }           // sometimes templates/body may reuse this
             public string? TemplateName { get; set; }   // for template nodes
+
+            // Template node – dynamic values (CTA-like)
+            public List<string>? BodyParams { get; set; }        // {{1}}, {{2}}, ...
+            public List<string>? Placeholders { get; set; }      // legacy alias
+            public string? HeaderMediaUrl { get; set; }          // image/video/document URL
+            public List<string>? UrlButtonParams { get; set; }   // index 0..2 URL params
+            public bool? UseProfileName { get; set; }            // auto-fill one slot
+            public int? ProfileNameSlot { get; set; }            // 1-based slot index
 
             // Tag node – support both "tags" and "tagIds" shapes
             public string[]? Tags { get; set; }
