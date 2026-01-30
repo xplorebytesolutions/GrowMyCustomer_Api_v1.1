@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
@@ -14,6 +15,7 @@ using xbytechat.api.Features.ESU.Facebook.DTOs;
 using xbytechat.api.Features.ESU.Facebook.Options;
 using xbytechat.api.Features.ESU.Shared;
 using xbytechat.api.Features.WhatsAppSettings.Services;
+using xbytechat.api.WhatsAppSettings.DTOs;
 using xbytechat_api.WhatsAppSettings.DTOs;
 using xbytechat_api.WhatsAppSettings.Services;
 
@@ -34,6 +36,7 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
         private readonly IWhatsAppPhoneNumberService _waPhones;
         private readonly ILogger<FacebookEsuService> _log;
         private readonly IEsuStatusService _esuStatus;
+
         public FacebookEsuService(
             IOptions<EsuOptions> options,
             IEsuStateStore stateStore,
@@ -95,19 +98,17 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
 
                 // ✅ IMPORTANT: Explicit scope improves reliability + App Review clarity
                 ["scope"] = !string.IsNullOrWhiteSpace(cfg.Scopes)
-         ? cfg.Scopes.Trim()
-         : null
+                    ? cfg.Scopes.Trim()
+                    : null
             };
-
 
             var launchUrl = QueryHelpers.AddQueryString(dialogBase, query);
 
             _log.LogInformation(
-                 "ESU Start: biz={BusinessId}, statePrefix={StatePrefix}, url={Url}",
-                 businessId,
-                 state.Length > 16 ? state[..16] : state,
-                 launchUrl);
-
+                "ESU Start: biz={BusinessId}, statePrefix={StatePrefix}, url={Url}",
+                businessId,
+                state.Length > 16 ? state[..16] : state,
+                launchUrl);
 
             return new FacebookEsuStartResponseDto
             {
@@ -163,11 +164,6 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
                 expiresAtUtc,
                 ct);
 
-            _log.LogDebug(
-                "ESU Callback: token upserted for biz={BusinessId}, provider={Provider}",
-                businessId,
-                Provider);
-
             await _fbTokens.InvalidateAsync(businessId, ct);
 
             var graphBase = _oauthOpts.Value.GraphBaseUrl?.TrimEnd('/') ?? "https://graph.facebook.com";
@@ -199,42 +195,22 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
                             wabaId,
                             businessId);
                     }
-                    else
-                    {
-                        _log.LogWarning(
-                            "ESU Callback: debug_token did not yield WABA for biz={BusinessId}",
-                            businessId);
-                    }
                 }
                 else
                 {
                     _log.LogWarning(
-                        "ESU Callback: AppId/AppSecret missing in FacebookOauthOptions, skipping debug_token WABA discovery (biz={BusinessId})",
+                        "ESU Callback: AppId/AppSecret missing in FacebookOauthOptions; skipping debug_token WABA discovery (biz={BusinessId})",
                         businessId);
                 }
 
                 if (string.IsNullOrWhiteSpace(wabaId))
                 {
                     wabaId = await TryGetWabaFromMeAccountsAsync(apiBase, accessToken, ct);
-                    if (!string.IsNullOrWhiteSpace(wabaId))
-                    {
-                        _log.LogInformation(
-                            "ESU Callback: WABA discovered via /me/whatsapp_business_accounts: {WabaId} (biz={BusinessId})",
-                            wabaId,
-                            businessId);
-                    }
                 }
 
                 if (string.IsNullOrWhiteSpace(wabaId))
                 {
                     wabaId = await TryGetWabaFromBusinessesAsync(apiBase, accessToken, ct);
-                    if (!string.IsNullOrWhiteSpace(wabaId))
-                    {
-                        _log.LogInformation(
-                            "ESU Callback: WABA discovered via /me/businesses: {WabaId} (biz={BusinessId})",
-                            wabaId,
-                            businessId);
-                    }
                 }
 
                 if (string.IsNullOrWhiteSpace(wabaId))
@@ -246,9 +222,7 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
             }
             catch (Exception ex)
             {
-                _log.LogError(ex,
-                    "ESU Callback: Error during WABA discovery for biz={BusinessId}",
-                    businessId);
+                _log.LogError(ex, "ESU Callback: Error during WABA discovery for biz={BusinessId}", businessId);
             }
 
             // 3) SAVE GLOBAL SETTINGS
@@ -268,49 +242,54 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
                     IsActive = true
                 };
 
-                _log.LogDebug(
-                    "ESU Callback: Saving WhatsApp settings for biz={BusinessId}: Provider={Provider}, ApiUrl={ApiUrl}, HasToken={HasToken}, WabaId={WabaId}",
-                    businessId,
-                    dto.Provider,
-                    dto.ApiUrl,
-                    !string.IsNullOrWhiteSpace(dto.ApiKey),
-                    dto.WabaId ?? "<none>");
-
                 await _waSettings.SaveOrUpdateSettingAsync(dto);
 
                 _log.LogInformation(
-                    "ESU Callback: Global WhatsApp settings saved for biz={BusinessId}, provider={Provider}, hasWaba={HasWaba}",
+                    "ESU Callback: WhatsApp settings saved for biz={BusinessId}, provider={Provider}, hasWaba={HasWaba}",
                     businessId,
                     Provider,
                     !string.IsNullOrWhiteSpace(wabaId));
             }
             catch (Exception ex)
             {
-                _log.LogError(ex,
-                    "ESU Callback: Failed to save WhatsApp settings for biz={BusinessId}",
-                    businessId);
-                // do NOT throw; ESU UI finished. FE will see missing config if save failed.
+                _log.LogError(ex, "ESU Callback: Failed to save WhatsApp settings for biz={BusinessId}", businessId);
+            }
+
+            // ✅ IMPORTANT: Load setting ONCE for steps 4 + subscription
+            WhatsAppSettingsDto? setting = null;
+            try
+            {
+                setting = await _waSettings.GetSettingsByBusinessIdAsync(businessId);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "ESU Callback: Failed to reload WhatsApp settings for biz={BusinessId}", businessId);
             }
 
             // 4) SYNC PHONE NUMBERS (best-effort, but logged)
             try
             {
-                var setting = await _waSettings.GetSettingsByBusinessIdAsync(businessId);
-                if (setting?.Provider?.Equals(Provider, StringComparison.OrdinalIgnoreCase) == true &&
+                if (setting is not null &&
+                    setting.Provider?.Equals(Provider, StringComparison.OrdinalIgnoreCase) == true &&
                     !string.IsNullOrWhiteSpace(setting.WabaId) &&
                     !string.IsNullOrWhiteSpace(setting.ApiKey))
                 {
-                    _log.LogDebug(
-                        "ESU Callback: Starting phone sync for biz={BusinessId} using WabaId={WabaId}",
-                        businessId,
-                        setting.WabaId);
+                    // ✅ FIX: box tuple into object so "?.ToString()" compiles
+                    object syncResult = await _waPhones.SyncFromProviderAsync(businessId, setting, Provider, ct);
 
-                    var (added, updated, total) =
-                        await _waPhones.SyncFromProviderAsync(businessId, setting, Provider, ct);
-
-                    _log.LogInformation(
-                        "ESU Callback: Phone sync complete for biz={BusinessId}. Added={Added}, Updated={Updated}, Total={Total}",
-                        businessId, added, updated, total);
+                    if (TryExtractCounts(syncResult, out var added, out var updated, out var total))
+                    {
+                        _log.LogInformation(
+                            "ESU Callback: Phone sync complete for biz={BusinessId}. Added={Added}, Updated={Updated}, Total={Total}",
+                            businessId, added, updated, total);
+                    }
+                    else
+                    {
+                        _log.LogInformation(
+                            "ESU Callback: Phone sync complete for biz={BusinessId}. Result={Result}",
+                            businessId,
+                            syncResult?.ToString() ?? "<null>");
+                    }
                 }
                 else
                 {
@@ -324,9 +303,26 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
             }
             catch (Exception ex)
             {
-                _log.LogError(ex,
-                    "ESU Callback: Error during phone sync for biz={BusinessId}",
-                    businessId);
+                _log.LogError(ex, "ESU Callback: Error during phone sync for biz={BusinessId}", businessId);
+            }
+
+            // 4b) Subscribe WABA to app events
+            if (setting is not null && !string.IsNullOrWhiteSpace(setting.WabaId))
+            {
+                try
+                {
+                    await SubscribeWabaAsync(setting.WabaId!, accessToken, ct);
+
+                    _log.LogInformation(
+                        "ESU Callback: WABA subscribed successfully. biz={BusinessId}, wabaId={WabaId}",
+                        businessId, setting.WabaId);
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning(ex,
+                        "ESU Callback: WABA subscribe failed (non-blocking). businessId={BusinessId}, wabaId={WabaId}",
+                        businessId, setting.WabaId);
+                }
             }
 
             // 5) FLAG AS COMPLETED
@@ -345,42 +341,26 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
                     value: "completed",
                     jsonPayload: payloadJson,
                     ct: ct);
-
-                _log.LogInformation(
-                    "ESU Callback: ESU completion flag set for biz={BusinessId}",
-                    businessId);
             }
             catch (Exception ex)
             {
-                _log.LogError(ex,
-                    "ESU Callback: Failed to write ESU completion flag for biz={BusinessId}",
-                    businessId);
+                _log.LogError(ex, "ESU Callback: Failed to write ESU completion flag for biz={BusinessId}", businessId);
             }
 
             // 6) FINAL REDIRECT
             var rawReturnUrl = TryGetReturnUrlFromState(state);
-
-            // ✅ default should match your app route (you are using "/app/welcomepage" in FE)
             var redirectBase = SanitizeReturnUrlOrDefault(rawReturnUrl, "/app/welcomepage");
 
-            // ✅ align with FE param expectation: ?esuStatus=success
             var redirect = redirectBase.Contains("?")
                 ? $"{redirectBase}&esuStatus=success"
                 : $"{redirectBase}?esuStatus=success";
 
-            _log.LogInformation(
-                "ESU Callback: Redirecting biz={BusinessId} to {Redirect}",
-                businessId,
-                redirect);
-
             return new FacebookEsuCallbackResponseDto { RedirectTo = redirect };
-
         }
 
         // =======================
-        // DISCONNECT (unchanged semantics)
+        // DISCONNECT
         // =======================
-
         public async Task DisconnectAsync(Guid businessId, CancellationToken ct = default)
         {
             if (businessId == Guid.Empty)
@@ -388,31 +368,30 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
 
             _log.LogInformation("ESU Disconnect: biz={BusinessId}", businessId);
 
-            // 0) Check current ESU status so we don't resurrect flags after a hard delete
             bool hadEsuOrToken = false;
 
+            object? statusObj = null;
             try
             {
-                var status = await _esuStatus.GetStatusAsync(businessId, ct);
-
-                if (status is not null)
+                statusObj = await _esuStatus.GetStatusAsync(businessId, ct);
+                if (statusObj is not null)
                 {
-                    hadEsuOrToken =
-                        status.Connected ||
-                        status.HasEsuFlag ||
-                        status.HasValidToken;
+                    hadEsuOrToken = ReadBool(statusObj, "Connected")
+                                    || ReadBool(statusObj, "HasEsuFlag")
+                                    || ReadBool(statusObj, "HasValidToken");
                 }
             }
             catch (Exception ex)
             {
-                // If status lookup fails, be conservative and allow disconnect pipeline to run.
-                _log.LogWarning(ex,
-                    "ESU Disconnect: failed to read status for biz={BusinessId}; continuing with disconnect.",
-                    businessId);
+                _log.LogWarning(ex, "ESU Disconnect: failed to read status for biz={BusinessId}; continuing.", businessId);
             }
 
-            // If there is no ESU flag, no valid token, no connection, treat as already clean.
-            // This is the case after a successful hard delete: do NOT recreate IntegrationFlags / EsuTokens.
+            if (statusObj is not null && (ReadBool(statusObj, "HardDeleted") || ReadBool(statusObj, "IsHardDeleted")))
+            {
+                _log.LogInformation("ESU Disconnect: biz={BusinessId} is hard-deleted; skipping disconnect to avoid re-creating data.", businessId);
+                return;
+            }
+
             if (!hadEsuOrToken)
             {
                 _log.LogInformation(
@@ -440,69 +419,58 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
                     {
                         _log.LogWarning(
                             "ESU Disconnect: remote revoke returned {Status} for biz={BusinessId}",
-                            resp.StatusCode,
-                            businessId);
-                    }
-                    else
-                    {
-                        _log.LogInformation(
-                            "ESU Disconnect: remote revoke succeeded for biz={BusinessId}",
-                            businessId);
+                            resp.StatusCode, businessId);
                     }
                 }
             }
             catch (Exception ex)
             {
-                _log.LogWarning(ex,
-                    "ESU Disconnect: error during remote revoke for biz={BusinessId}",
-                    businessId);
+                _log.LogWarning(ex, "ESU Disconnect: error during remote revoke for biz={BusinessId}", businessId);
             }
 
-            // 2) Canonical local deauthorize (flags + EsuTokens + cache) via status service
+            // 2) Canonical local deauthorize
             try
             {
                 await _esuStatus.DeauthorizeAsync(businessId, ct);
-
-                _log.LogInformation(
-                    "ESU Disconnect: local deauthorize completed for biz={BusinessId}",
-                    businessId);
             }
             catch (Exception ex)
             {
-                _log.LogError(ex,
-                    "ESU Disconnect: error during local deauthorize for biz={BusinessId}",
-                    businessId);
+                _log.LogError(ex, "ESU Disconnect: error during local deauthorize for biz={BusinessId}", businessId);
             }
 
-            // 3) Deactivate WhatsApp settings for META_CLOUD
+            // 3) Deactivate WhatsApp settings
             try
             {
-                await _waSettings.SaveOrUpdateSettingAsync(new SaveWhatsAppSettingDto
+                var existing = await _waSettings.GetSettingsByBusinessIdAsync(businessId);
+                if (existing is not null)
                 {
-                    BusinessId = businessId,
-                    Provider = Provider,
-                    ApiUrl = null,
-                    ApiKey = null,
-                    WabaId = null,
-                    SenderDisplayName = null,
-                    WebhookSecret = null,
-                    WebhookVerifyToken = null,
-                    WebhookCallbackUrl = null,
-                    IsActive = false
-                });
-
-                _log.LogInformation(
-                    "ESU Disconnect: WhatsApp settings deactivated for biz={BusinessId}",
-                    businessId);
+                    await _waSettings.SaveOrUpdateSettingAsync(new SaveWhatsAppSettingDto
+                    {
+                        BusinessId = businessId,
+                        Provider = Provider,
+                        ApiUrl = null,
+                        ApiKey = null,
+                        WabaId = null,
+                        SenderDisplayName = null,
+                        WebhookSecret = null,
+                        WebhookVerifyToken = null,
+                        WebhookCallbackUrl = null,
+                        IsActive = false
+                    });
+                }
+                else
+                {
+                    _log.LogInformation(
+                        "ESU Disconnect: WhatsApp settings already absent for biz={BusinessId}; skipping deactivation to avoid recreating rows.",
+                        businessId);
+                }
             }
             catch (Exception ex)
             {
-                _log.LogError(ex,
-                    "ESU Disconnect: error deactivating WhatsApp settings for biz={BusinessId}",
-                    businessId);
+                _log.LogError(ex, "ESU Disconnect: error deactivating WhatsApp settings for biz={BusinessId}", businessId);
             }
 
-            // 4) UX flag: mark as "disconnected" ONLY for businesses that previously had ESU/Token
+            // 4) UX flag
             try
             {
                 await _flagStore.UpsertAsync(
@@ -511,15 +479,175 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
                     value: "disconnected",
                     jsonPayload: "{\"completed\":false}",
                     ct: ct);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "ESU Disconnect: failed to update ESU 'disconnected' flag for biz={BusinessId}", businessId);
+            }
+        }
 
-                _log.LogInformation(
-                    "ESU Disconnect: ESU flag updated to 'disconnected' for biz={BusinessId}",
-                    businessId);
+        // =======================
+        // FULL DELETE (hard delete)
+        // =======================
+        public async Task FullDeleteAsync(Guid businessId, CancellationToken ct = default)
+        {
+            if (businessId == Guid.Empty)
+                throw new ArgumentException("BusinessId is required.", nameof(businessId));
+
+            _log.LogInformation("ESU FullDelete: start for biz={BusinessId}", businessId);
+
+            try
+            {
+                await DisconnectAsync(businessId, ct);
             }
             catch (Exception ex)
             {
                 _log.LogWarning(ex,
-                    "ESU Disconnect: failed to update ESU 'disconnected' flag for biz={BusinessId}",
+                    "ESU FullDelete: DisconnectAsync failed or partial for biz={BusinessId}. Continuing with local cleanup.",
+                    businessId);
+            }
+
+            try
+            {
+                await _tokens.DeleteAsync(businessId, Provider, ct);
+                _log.LogInformation("ESU FullDelete: EsuTokens deleted for biz={BusinessId}", businessId);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "ESU FullDelete: failed to delete EsuTokens for biz={BusinessId}", businessId);
+            }
+
+            try
+            {
+                var deleted = await _waSettings.DeleteSettingsAsync(businessId, ct);
+                _log.LogInformation("ESU FullDelete: WhatsApp settings+phones delete={Deleted} for biz={BusinessId}", deleted, businessId);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "ESU FullDelete: failed to delete WhatsApp settings for biz={BusinessId}", businessId);
+            }
+
+            try
+            {
+                await _flagStore.DeleteAsync(businessId, ct);
+                _log.LogInformation("ESU FullDelete: IntegrationFlags row deleted for biz={BusinessId}", businessId);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "ESU FullDelete: failed to delete IntegrationFlags for biz={BusinessId}", businessId);
+            }
+
+            try
+            {
+                await _fbTokens.InvalidateAsync(businessId, ct);
+            }
+            catch (Exception ex)
+            {
+                _log.LogDebug(ex, "ESU FullDelete: token cache invalidate failed for biz={BusinessId}", businessId);
+            }
+
+            _log.LogInformation("ESU FullDelete: completed for biz={BusinessId}", businessId);
+        }
+
+        // =======================
+        // REGISTER NUMBER
+        // =======================
+        public async Task RegisterPhoneNumberAsync(Guid businessId, string pin, CancellationToken ct)
+        {
+            if (businessId == Guid.Empty)
+                throw new ArgumentException("BusinessId is required.", nameof(businessId));
+
+            pin = (pin ?? string.Empty).Trim();
+
+            if (pin.Length != 6 || !IsAllDigits(pin))
+                throw new InvalidOperationException("PIN must be exactly 6 digits.");
+
+            var setting = await _waSettings.GetSettingsByBusinessIdAsync(businessId);
+            if (setting is null)
+                throw new InvalidOperationException("WhatsApp settings not found for this business. Please connect ESU first.");
+
+            if (!string.Equals(setting.Provider, Provider, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Invalid provider. Expected '{Provider}' but got '{setting.Provider}'.");
+
+            if (string.IsNullOrWhiteSpace(setting.ApiUrl) || string.IsNullOrWhiteSpace(setting.ApiKey))
+                throw new InvalidOperationException("WhatsApp settings are missing ApiUrl/ApiKey. Please reconnect ESU.");
+
+            var phones = await _waPhones.ListAsync(businessId, Provider, ct);
+            if (phones is null || phones.Count == 0)
+                throw new InvalidOperationException("No phone numbers found. Please complete ESU and phone sync first.");
+
+            var phone = phones[0];
+            var phoneNumberId = GetPhoneNumberId(phone);
+
+            if (string.IsNullOrWhiteSpace(phoneNumberId))
+                throw new InvalidOperationException("PhoneNumberId is missing in stored phone record. Sync did not capture it.");
+
+            var url = $"{setting.ApiUrl.TrimEnd('/')}/{phoneNumberId}/register";
+
+            var payload = new
+            {
+                messaging_product = "whatsapp",
+                pin = pin
+            };
+
+            _log.LogInformation(
+                "ESU RegisterNumber: registering phone_number_id={PhoneNumberId} for biz={BusinessId}",
+                phoneNumberId,
+                businessId);
+
+            using var http = new HttpClient();
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", setting.ApiKey);
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, url)
+            {
+                Content = JsonContent.Create(payload)
+            };
+
+            using var res = await http.SendAsync(req, ct);
+            var body = await res.Content.ReadAsStringAsync(ct);
+
+            if (!res.IsSuccessStatusCode)
+            {
+                _log.LogWarning(
+                    "ESU RegisterNumber failed: biz={BusinessId}, phone_number_id={PhoneNumberId}, status={Status}, body={Body}",
+                    businessId,
+                    phoneNumberId,
+                    (int)res.StatusCode,
+                    Truncate(body));
+
+                throw new InvalidOperationException($"Failed to register phone number. Meta returned {(int)res.StatusCode}.");
+            }
+
+            _log.LogInformation(
+                "ESU RegisterNumber success: biz={BusinessId}, phone_number_id={PhoneNumberId}, body={Body}",
+                businessId,
+                phoneNumberId,
+                Truncate(body));
+
+            // Best-effort: resync after register
+            try
+            {
+                // ✅ FIX: box tuple into object so "?.ToString()" compiles
+                object syncResult = await _waPhones.SyncFromProviderAsync(businessId, setting, Provider, ct);
+
+                if (TryExtractCounts(syncResult, out var added, out var updated, out var total))
+                {
+                    _log.LogInformation(
+                        "ESU RegisterNumber: phone sync after register complete for biz={BusinessId}. Added={Added}, Updated={Updated}, Total={Total}",
+                        businessId, added, updated, total);
+                }
+                else
+                {
+                    _log.LogInformation(
+                        "ESU RegisterNumber: phone sync after register complete for biz={BusinessId}. Result={Result}",
+                        businessId,
+                        syncResult?.ToString() ?? "<null>");
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "ESU RegisterNumber: sync-after-register failed for biz={BusinessId} (non-blocking).",
                     businessId);
             }
         }
@@ -527,7 +655,6 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
         // =======================
         // HELPERS
         // =======================
-
         private static string CreateStateToken(Guid businessId, string? returnUrl)
         {
             Span<byte> random = stackalloc byte[16];
@@ -551,11 +678,26 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
                     return string.IsNullOrWhiteSpace(url) ? null : url;
                 }
             }
-            catch
-            {
-                // ignore malformed state
-            }
+            catch { }
             return null;
+        }
+
+        private async Task SubscribeWabaAsync(string wabaId, string accessToken, CancellationToken ct)
+        {
+            var graphBase = _oauthOpts.Value.GraphBaseUrl?.TrimEnd('/') ?? "https://graph.facebook.com";
+            var graphVer = _oauthOpts.Value.GraphApiVersion?.Trim('/') ?? "v20.0";
+            var url = $"{graphBase}/{graphVer}/{wabaId}/subscribed_apps";
+
+            using var http = new HttpClient();
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+            using var res = await http.PostAsync(url, content: null, ct);
+
+            if (!res.IsSuccessStatusCode)
+            {
+                var body = await res.Content.ReadAsStringAsync(ct);
+                throw new InvalidOperationException($"WABA subscribe failed ({(int)res.StatusCode}). Body: {Truncate(body)}");
+            }
         }
 
         private async Task<string?> TryGetWabaFromDebugTokenAsync(
@@ -717,14 +859,11 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
 
         private static string SanitizeReturnUrlOrDefault(string? returnUrl, string fallback)
         {
-            // Default
             if (string.IsNullOrWhiteSpace(returnUrl))
                 return fallback;
 
             returnUrl = returnUrl.Trim();
 
-            // ✅ Allow only relative paths (recommended)
-            // Must start with "/" but NOT with "//" (protocol-relative)
             if (!returnUrl.StartsWith("/", StringComparison.Ordinal) ||
                 returnUrl.StartsWith("//", StringComparison.Ordinal) ||
                 returnUrl.Contains("\\", StringComparison.Ordinal))
@@ -733,210 +872,6 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
             }
 
             return returnUrl;
-        }
-
-
-        public async Task FullDeleteAsync(Guid businessId, CancellationToken ct = default)
-        {
-            if (businessId == Guid.Empty)
-                throw new ArgumentException("BusinessId is required.", nameof(businessId));
-
-            _log.LogInformation("ESU FullDelete: start for biz={BusinessId}", businessId);
-
-            // 1) Run normal disconnect pipeline (best-effort)
-            try
-            {
-                await DisconnectAsync(businessId, ct);
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning(ex,
-                    "ESU FullDelete: DisconnectAsync failed or partial for biz={BusinessId}. Continuing with local cleanup.",
-                    businessId);
-            }
-
-            // 2) Delete ESU tokens for this business/provider
-            try
-            {
-                await _tokens.DeleteAsync(businessId, Provider, ct);
-
-                _log.LogInformation(
-                    "ESU FullDelete: EsuTokens deleted for biz={BusinessId}",
-                    businessId);
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning(ex,
-                    "ESU FullDelete: failed to delete EsuTokens for biz={BusinessId}",
-                    businessId);
-            }
-
-            // 3) Delete WhatsApp settings (already in your code)
-            try
-            {
-                var deleted = await _waSettings.DeleteSettingsAsync(businessId);
-                _log.LogInformation(
-                    "ESU FullDelete: WhatsApp settings delete={Deleted} for biz={BusinessId}",
-                    deleted,
-                    businessId);
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning(ex,
-                    "ESU FullDelete: failed to delete WhatsApp settings for biz={BusinessId}",
-                    businessId);
-            }
-
-            // 4) Delete WhatsApp phone numbers
-            try
-            {
-                var numbers = await _waPhones.ListAsync(businessId, Provider, ct);
-                foreach (var n in numbers)
-                {
-                    await _waPhones.DeleteAsync(businessId, Provider, n.Id);
-                }
-
-                _log.LogInformation(
-                    "ESU FullDelete: {Count} WhatsApp phone numbers deleted for biz={BusinessId}",
-                    numbers.Count,
-                    businessId);
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning(ex,
-                    "ESU FullDelete: failed to delete WhatsApp phone numbers for biz={BusinessId}",
-                    businessId);
-            }
-
-            // 5) Delete IntegrationFlags row so /status can never say ESU connected
-            try
-            {
-                await _flagStore.DeleteAsync(businessId, ct);
-
-                _log.LogInformation(
-                    "ESU FullDelete: IntegrationFlags row deleted for biz={BusinessId}",
-                    businessId);
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning(ex,
-                    "ESU FullDelete: failed to delete IntegrationFlags for biz={BusinessId}",
-                    businessId);
-            }
-
-            // 6) Also nuke any cached token/status
-            try
-            {
-                await _fbTokens.InvalidateAsync(businessId, ct);
-            }
-            catch (Exception ex)
-            {
-                _log.LogDebug(ex,
-                    "ESU FullDelete: token cache invalidate failed for biz={BusinessId}",
-                    businessId);
-            }
-
-            _log.LogInformation("ESU FullDelete: completed for biz={BusinessId}", businessId);
-        }
-
-        public async Task RegisterPhoneNumberAsync(Guid businessId, string pin, CancellationToken ct)
-        {
-            if (businessId == Guid.Empty)
-                throw new ArgumentException("BusinessId is required.", nameof(businessId));
-
-            pin = (pin ?? string.Empty).Trim();
-
-            // PIN must be exactly 6 digits
-            if (pin.Length != 6 || !IsAllDigits(pin))
-                throw new InvalidOperationException("PIN must be exactly 6 digits.");
-
-            // Load the WhatsApp settings saved during ESU
-            var setting = await _waSettings.GetSettingsByBusinessIdAsync(businessId);
-            if (setting is null)
-                throw new InvalidOperationException("WhatsApp settings not found for this business. Please connect ESU first.");
-
-            if (!string.Equals(setting.Provider, Provider, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException($"Invalid provider. Expected '{Provider}' but got '{setting.Provider}'.");
-
-            if (string.IsNullOrWhiteSpace(setting.ApiUrl) || string.IsNullOrWhiteSpace(setting.ApiKey))
-                throw new InvalidOperationException("WhatsApp settings are missing ApiUrl/ApiKey. Please reconnect ESU.");
-
-            // Pick a phone_number_id from your stored phone numbers table
-            // NOTE: We intentionally DO NOT accept phoneNumberId from client to avoid cross-tenant attacks.
-            var phones = await _waPhones.ListAsync(businessId, Provider, ct);
-            if (phones is null || phones.Count == 0)
-                throw new InvalidOperationException("No phone numbers found. Please complete ESU and phone sync first.");
-
-            // Choose the first one. If you later add "IsPrimary", pick that instead.
-            var phone = phones[0];
-
-            // IMPORTANT: Your phone entity must have the provider PhoneNumberId.
-            // Many implementations call it ProviderPhoneNumberId / PhoneNumberId / MetaPhoneNumberId.
-            // Adjust the property name below to match your model.
-            var phoneNumberId = GetPhoneNumberId(phone);
-
-            if (string.IsNullOrWhiteSpace(phoneNumberId))
-                throw new InvalidOperationException("PhoneNumberId is missing in stored phone record. Sync did not capture it.");
-
-            // Call Meta register endpoint
-            var url = $"{setting.ApiUrl.TrimEnd('/')}/{phoneNumberId}/register";
-
-            var payload = new
-            {
-                messaging_product = "whatsapp",
-                pin = pin
-            };
-
-            _log.LogInformation(
-                "ESU RegisterNumber: registering phone_number_id={PhoneNumberId} for biz={BusinessId}",
-                phoneNumberId,
-                businessId);
-
-            using var http = new HttpClient();
-            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", setting.ApiKey);
-
-            using var req = new HttpRequestMessage(HttpMethod.Post, url)
-            {
-                Content = JsonContent.Create(payload)
-            };
-
-            using var res = await http.SendAsync(req, ct);
-            var body = await res.Content.ReadAsStringAsync(ct);
-
-            if (!res.IsSuccessStatusCode)
-            {
-                _log.LogWarning(
-                    "ESU RegisterNumber failed: biz={BusinessId}, phone_number_id={PhoneNumberId}, status={Status}, body={Body}",
-                    businessId,
-                    phoneNumberId,
-                    (int)res.StatusCode,
-                    Truncate(body));
-
-                // Bubble a clean message to the UI
-                throw new InvalidOperationException($"Failed to register phone number. Meta returned {(int)res.StatusCode}.");
-            }
-
-            _log.LogInformation(
-                "ESU RegisterNumber success: biz={BusinessId}, phone_number_id={PhoneNumberId}, body={Body}",
-                businessId,
-                phoneNumberId,
-                Truncate(body));
-
-            // Best-effort: resync after register so your UI stops showing pending.
-            try
-            {
-                var (added, updated, total) = await _waPhones.SyncFromProviderAsync(businessId, setting, Provider, ct);
-
-                _log.LogInformation(
-                    "ESU RegisterNumber: phone sync after register complete for biz={BusinessId}. Added={Added}, Updated={Updated}, Total={Total}",
-                    businessId, added, updated, total);
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning(ex,
-                    "ESU RegisterNumber: sync-after-register failed for biz={BusinessId} (non-blocking).",
-                    businessId);
-            }
         }
 
         private static bool IsAllDigits(string value)
@@ -948,19 +883,10 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
             return true;
         }
 
-        /// <summary>
-        /// Extracts the Meta phone_number_id from your phone record.
-        /// Adjust this to match your actual model property name.
-        /// </summary>
         private static string? GetPhoneNumberId(object phone)
         {
-            // If your phone type is strongly typed (not object), replace with direct property access.
-            // Example:
-            // return phone.ProviderPhoneNumberId;
-
             var type = phone.GetType();
 
-            // Try common property names without hardcoding your model here
             var prop =
                 type.GetProperty("ProviderPhoneNumberId")
                 ?? type.GetProperty("PhoneNumberId")
@@ -970,8 +896,61 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
             return prop?.GetValue(phone)?.ToString();
         }
 
+        private static bool TryExtractCounts(object? result, out int added, out int updated, out int total)
+        {
+            added = updated = total = 0;
+            if (result is null) return false;
+
+            var t = result.GetType();
+
+            var pAdded = t.GetProperty("Added");
+            var pUpdated = t.GetProperty("Updated");
+            var pTotal = t.GetProperty("Total");
+
+            if (pAdded is not null && pUpdated is not null && pTotal is not null)
+            {
+                try
+                {
+                    added = Convert.ToInt32(pAdded.GetValue(result));
+                    updated = Convert.ToInt32(pUpdated.GetValue(result));
+                    total = Convert.ToInt32(pTotal.GetValue(result));
+                    return true;
+                }
+                catch { }
+            }
+
+            var f1 = t.GetField("Item1");
+            var f2 = t.GetField("Item2");
+            var f3 = t.GetField("Item3");
+
+            if (f1 is not null && f2 is not null && f3 is not null)
+            {
+                try
+                {
+                    added = Convert.ToInt32(f1.GetValue(result));
+                    updated = Convert.ToInt32(f2.GetValue(result));
+                    total = Convert.ToInt32(f3.GetValue(result));
+                    return true;
+                }
+                catch { }
+            }
+
+            return false;
+        }
+
+        private static bool ReadBool(object obj, string propName)
+        {
+            try
+            {
+                var p = obj.GetType().GetProperty(propName);
+                if (p is null) return false;
+                var val = p.GetValue(obj);
+                return val is bool b && b;
+            }
+            catch
+            {
+                return false;
+            }
+        }
     }
 }
-
-
-

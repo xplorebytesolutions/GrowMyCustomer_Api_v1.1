@@ -1,5 +1,6 @@
 ﻿#nullable enable
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
@@ -31,110 +32,79 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
             _log = log;
         }
 
-        //public async Task<EsuStatusDto> GetStatusAsync(Guid businessId, CancellationToken ct = default)
-        //{
-        //    if (businessId == Guid.Empty)
-        //        throw new ArgumentException("businessId is required.", nameof(businessId));
-
-        //    var row = await _db.IntegrationFlags
-        //        .AsNoTracking()
-        //        .SingleOrDefaultAsync(x => x.BusinessId == businessId, ct);
-
-        //    if (row is null)
-        //    {
-        //        return new EsuStatusDto
-        //        {
-        //            Connected = false,
-        //            TokenExpiresAtUtc = null,
-        //            WillExpireSoon = false,
-        //            UpdatedAtUtc = DateTime.UtcNow,
-        //            Debug = "no-row"
-        //        };
-        //    }
-
-        //    DateTime? expiresAt = null;
-
-        //    bool willExpireSoon = false;
-        //    try
-        //    {
-        //        var tok = await _tokenService.TryGetValidAsync(businessId, ct);
-        //        if (tok is not null)
-        //        {
-        //            expiresAt = tok.ExpiresAtUtc;
-        //            willExpireSoon = tok.WillExpireSoon();
-        //        }
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        _log.LogDebug(ex, "Status check token probe failed for {Biz}", businessId);
-        //    }
-
-        //    return new EsuStatusDto
-        //    {
-        //        Connected = row.FacebookEsuCompleted && expiresAt.HasValue && !willExpireSoon,
-        //        HasEsuFlag = row.FacebookEsuCompleted,
-        //        HasValidToken = expiresAt.HasValue && !willExpireSoon,
-        //        TokenExpiresAtUtc = expiresAt,
-        //        WillExpireSoon = willExpireSoon,
-        //        UpdatedAtUtc = row.UpdatedAtUtc,
-        //        Debug = null
-        //    };
-        //}
-
         public async Task<EsuStatusDto> GetStatusAsync(Guid businessId, CancellationToken ct = default)
         {
             if (businessId == Guid.Empty)
                 throw new ArgumentException("businessId is required.", nameof(businessId));
 
+            var now = DateTime.UtcNow;
+
+            // 1) Read IntegrationFlags row (UX flag)
             var row = await _db.IntegrationFlags
                 .AsNoTracking()
                 .SingleOrDefaultAsync(x => x.BusinessId == businessId, ct);
 
-            if (row is null)
-            {
-                return new EsuStatusDto
-                {
-                    Connected = false,
-                    HasEsuFlag = false,
-                    HasValidToken = false,
-                    TokenExpiresAtUtc = null,
-                    WillExpireSoon = false,
-                    UpdatedAtUtc = DateTime.UtcNow,
-                    Debug = "no-row"
-                };
-            }
+            var hasEsuFlag = row?.FacebookEsuCompleted ?? false;
 
-            DateTime? expiresAt = null;
+            // 2) Pull latest token row (even if expiring/expired) to show expiry in UI
+            //    (TryGetValidAsync hides expiring tokens by design)
+            var latestToken = await _db.EsuTokens
+                .AsNoTracking()
+                .Where(x => x.BusinessId == businessId && x.Provider == Provider)
+                .OrderByDescending(x => x.UpdatedAtUtc ?? x.CreatedAtUtc)
+                .FirstOrDefaultAsync(ct);
+
+            DateTime? expiresAt = latestToken?.ExpiresAtUtc;
+
+            // 3) Determine "valid token" using canonical service logic
             bool hasValidToken = false;
-            bool willExpireSoon = false;
-
             try
             {
-                // TryGetValidAsync already enforces "not expired" and "not expiring soon" for sending.
-                var tok = await _tokenService.TryGetValidAsync(businessId, ct);
-                if (tok is not null)
-                {
-                    expiresAt = tok.ExpiresAtUtc;
-                    // In current implementation this will always be false,
-                    // but we keep it for future-proofing.
-                    willExpireSoon = tok.WillExpireSoon();
-                    hasValidToken = true;
-                }
+                var valid = await _tokenService.TryGetValidAsync(businessId, ct);
+                hasValidToken = valid is not null;
+
+                // Prefer valid token expiry if token row doesn't have it for some reason
+                expiresAt ??= valid?.ExpiresAtUtc;
             }
             catch (Exception ex)
             {
                 _log.LogDebug(ex, "Status check token probe failed for {Biz}", businessId);
             }
 
+            // 4) HardDeleted detection (your intended terminal state)
+            var hasAnyToken = await _db.EsuTokens
+                .AsNoTracking()
+                .AnyAsync(x => x.BusinessId == businessId && x.Provider == Provider, ct);
+
+            var hasAnySetting = await _db.WhatsAppSettings
+                .AsNoTracking()
+                .AnyAsync(x => x.BusinessId == businessId && x.Provider == Provider, ct);
+
+            var hasAnyPhone = await _db.WhatsAppPhoneNumbers
+                .AsNoTracking()
+                .AnyAsync(x => x.BusinessId == businessId && x.Provider == Provider, ct);
+
+            // ✅ Terminal state: no flags row + no tokens/settings/phones
+            var hardDeleted = (row is null) && !hasAnyToken && !hasAnySetting && !hasAnyPhone;
+
+            // 5) Expiring soon (UI signal)
+            var willExpireSoon =
+                expiresAt.HasValue &&
+                expiresAt.Value > now &&
+                expiresAt.Value <= now.AddMinutes(10);
+
+            var updatedAt = row?.UpdatedAtUtc ?? now;
+
             return new EsuStatusDto
             {
-                Connected = row.FacebookEsuCompleted && hasValidToken,
-                HasEsuFlag = row.FacebookEsuCompleted,
+                Connected = hasEsuFlag && hasValidToken,
+                HasEsuFlag = hasEsuFlag,
                 HasValidToken = hasValidToken,
-                TokenExpiresAtUtc = expiresAt,      // may be null (Meta didn’t send expiry)
-                WillExpireSoon = willExpireSoon,  // currently always false, but kept for contract
-                UpdatedAtUtc = row.UpdatedAtUtc,
-                Debug = null
+                TokenExpiresAtUtc = expiresAt,
+                WillExpireSoon = willExpireSoon,
+                HardDeleted = hardDeleted,
+                UpdatedAtUtc = updatedAt,
+                Debug = row is null ? "no-row" : null
             };
         }
 
@@ -144,7 +114,9 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
                 throw new ArgumentException("businessId is required.", nameof(businessId));
 
             // 1) Clear UX flag
-            var row = await _db.IntegrationFlags.SingleOrDefaultAsync(x => x.BusinessId == businessId, ct);
+            var row = await _db.IntegrationFlags
+                .SingleOrDefaultAsync(x => x.BusinessId == businessId, ct);
+
             if (row is not null)
             {
                 row.FacebookEsuCompleted = false;
@@ -154,7 +126,6 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
 
             // 2) Revoke token (EsuTokens) + 3) drop from cache
             await _tokens.RevokeAsync(businessId, Provider, ct);
-           
             await _tokenService.InvalidateAsync(businessId, ct);
         }
     }

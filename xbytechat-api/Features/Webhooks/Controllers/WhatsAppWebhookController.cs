@@ -71,30 +71,7 @@ namespace xbytechat.api.Features.Webhooks.Controllers
             return Forbid("Token mismatch.");
         }
 
-        //[HttpPost]
-        //public IActionResult HandleStatus([FromBody] JsonElement payload)
-        //{
-        //    try
-        //    {
-        //        // Log that we actually got a POST. This is what we care about for inbound messages.
-        //        var bodyString = payload.ToString();
-        //        _logger.LogInformation(
-        //            "📥 WhatsApp webhook POST received at controller. Payload length={Length} chars.",
-        //            bodyString?.Length ?? 0);
-
-        //        // Important: clone before enqueue
-        //        var cloned = payload.Clone();
-        //        _queue.Enqueue(cloned);
-
-        //        _logger.LogInformation("📥 Webhook payload enqueued successfully.");
-        //        return Ok(new { received = true });
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        _logger.LogError(ex, "❌ Failed to enqueue WhatsApp webhook payload.");
-        //        return StatusCode(500, new { error = "Webhook queue failed" });
-        //    }
-        //}
+       
 
         [HttpPost]
         public IActionResult HandleStatus([FromBody] JsonElement payload)

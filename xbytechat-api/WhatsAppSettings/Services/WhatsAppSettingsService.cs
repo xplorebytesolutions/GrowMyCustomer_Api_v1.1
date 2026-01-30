@@ -1,11 +1,13 @@
 ﻿// 📄 xbytechat_api/WhatsAppSettings/Services/WhatsAppSettingsService.cs
 using Microsoft.EntityFrameworkCore;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using xbytechat.api;
 using xbytechat.api.Features.WhatsAppSettings.Models;
@@ -18,16 +20,13 @@ namespace xbytechat_api.WhatsAppSettings.Services
     public class WhatsAppSettingsService : IWhatsAppSettingsService
     {
         private readonly AppDbContext _dbContext;
-        private readonly HttpClient _http;                    
         private readonly IHttpClientFactory _httpClientFactory;
 
         public WhatsAppSettingsService(
             AppDbContext dbContext,
-            HttpClient http,
             IHttpClientFactory httpClientFactory)
         {
             _dbContext = dbContext;
-            _http = http;
             _httpClientFactory = httpClientFactory;
         }
 
@@ -79,7 +78,6 @@ namespace xbytechat_api.WhatsAppSettings.Services
                     Provider = providerCanon,
                     ApiUrl = (dto.ApiUrl ?? string.Empty).Trim(),
                     ApiKey = (dto.ApiKey ?? string.Empty).Trim(),
-                    // Numbers are not stored here anymore
                     SenderDisplayName = string.IsNullOrWhiteSpace(dto.SenderDisplayName) ? null : dto.SenderDisplayName.Trim(),
                     WabaId = string.IsNullOrWhiteSpace(dto.WabaId) ? null : dto.WabaId.Trim(),
                     WebhookSecret = string.IsNullOrWhiteSpace(dto.WebhookSecret) ? null : dto.WebhookSecret.Trim(),
@@ -102,9 +100,11 @@ namespace xbytechat_api.WhatsAppSettings.Services
                 var display = string.IsNullOrWhiteSpace(dto.SenderDisplayName) ? null : dto.SenderDisplayName!.Trim();
 
                 // Upsert by business+provider+phoneId
+                var providerLc = providerCanon.ToLowerInvariant();
+
                 var numberRow = await _dbContext.WhatsAppPhoneNumbers.FirstOrDefaultAsync(x =>
                     x.BusinessId == dto.BusinessId &&
-                    x.Provider.ToLower() == providerCanon.ToLower() &&
+                    x.Provider.ToLower() == providerLc &&
                     x.PhoneNumberId == pnid);
 
                 if (numberRow == null)
@@ -137,7 +137,7 @@ namespace xbytechat_api.WhatsAppSettings.Services
                 // Ensure single default per business+provider
                 await _dbContext.WhatsAppPhoneNumbers
                     .Where(x => x.BusinessId == dto.BusinessId &&
-                                x.Provider.ToLower() == providerCanon.ToLower() &&
+                                x.Provider.ToLower() == providerLc &&
                                 x.Id != numberRow.Id)
                     .ExecuteUpdateAsync(s => s.SetProperty(p => p.IsDefault, false));
             }
@@ -146,7 +146,7 @@ namespace xbytechat_api.WhatsAppSettings.Services
             await tx.CommitAsync();
         }
 
-        public async Task<WhatsAppSettingsDto> GetSettingsByBusinessIdAsync(Guid businessId)
+        public async Task<WhatsAppSettingsDto?> GetSettingsByBusinessIdAsync(Guid businessId)
         {
             var row = await (
                 from s in _dbContext.WhatsAppSettings.AsNoTracking()
@@ -185,15 +185,16 @@ namespace xbytechat_api.WhatsAppSettings.Services
             };
         }
 
-        public async Task<bool> DeleteSettingsAsync(Guid businessId)
+        public async Task<bool> DeleteSettingsAsync(Guid businessId, CancellationToken ct = default)
         {
-            var setting = await _dbContext.WhatsAppSettings
-                .FirstOrDefaultAsync(x => x.BusinessId == businessId);
+            var all = await _dbContext.WhatsAppSettings
+                .Where(x => x.BusinessId == businessId)
+                .ToListAsync(ct);
 
-            if (setting == null) return false;
+            if (all.Count == 0) return false;
 
-            _dbContext.WhatsAppSettings.Remove(setting);
-            await _dbContext.SaveChangesAsync();
+            _dbContext.WhatsAppSettings.RemoveRange(all);
+            await _dbContext.SaveChangesAsync(ct);
             return true;
         }
 
@@ -206,7 +207,6 @@ namespace xbytechat_api.WhatsAppSettings.Services
             if (string.IsNullOrWhiteSpace(dto.Provider))
                 throw new ArgumentException("Provider is required.");
 
-            // normalize provider and baseUrl
             var provider = dto.Provider.Trim();
             var lower = provider.ToLowerInvariant();
             var baseUrl = (dto.ApiUrl ?? string.Empty).Trim().TrimEnd('/');
@@ -237,13 +237,12 @@ namespace xbytechat_api.WhatsAppSettings.Services
                 return "✅ Meta Cloud token & phone number ID are valid.";
             }
 
-            // ----- Pinnacle (formerly Pinbot) -----
+            // ----- Pinnacle -----
             if (lower == "pinnacle")
             {
                 if (string.IsNullOrWhiteSpace(dto.ApiKey))
                     return "❌ API Key is required for Pinnacle.";
 
-                // Pinnacle requires either phone number id OR WABA id in the path
                 var pathId =
                     !string.IsNullOrWhiteSpace(dto.PhoneNumberId) ? dto.PhoneNumberId!.Trim() :
                     !string.IsNullOrWhiteSpace(dto.WabaId) ? dto.WabaId!.Trim() :
@@ -285,10 +284,8 @@ namespace xbytechat_api.WhatsAppSettings.Services
             return $"❌ Unsupported provider: {dto.Provider}";
         }
 
-        // ✅ UPDATED: read from WhatsAppPhoneNumbers (default by provider), fallback to mirrored settings value
         public async Task<string?> GetSenderNumberAsync(Guid businessId)
         {
-            // 1) Find this business's active provider
             var providerRaw = await _dbContext.WhatsAppSettings
                 .AsNoTracking()
                 .Where(s => s.BusinessId == businessId && s.IsActive)
@@ -299,11 +296,9 @@ namespace xbytechat_api.WhatsAppSettings.Services
             if (string.IsNullOrWhiteSpace(providerRaw))
                 return null;
 
-            // Canonical provider ("META_CLOUD" | "PINNACLE")
             var provider = providerRaw.Trim().Replace("-", "_").Replace(" ", "_").ToUpperInvariant();
             var providerLc = provider.ToLowerInvariant();
 
-            // 2) Prefer the default active number for THAT provider
             var number = await _dbContext.WhatsAppPhoneNumbers
                 .AsNoTracking()
                 .Where(n => n.BusinessId == businessId &&
@@ -317,7 +312,6 @@ namespace xbytechat_api.WhatsAppSettings.Services
             if (!string.IsNullOrWhiteSpace(number))
                 return number;
 
-            // 3) Fallback: any active number for this business (regardless of provider)
             number = await _dbContext.WhatsAppPhoneNumbers
                 .AsNoTracking()
                 .Where(n => n.BusinessId == businessId && n.IsActive)
@@ -338,16 +332,16 @@ namespace xbytechat_api.WhatsAppSettings.Services
             if (!string.IsNullOrWhiteSpace(s?.WebhookCallbackUrl))
                 return s!.WebhookCallbackUrl!;
 
-            return $"{appBaseUrl.TrimEnd('/')}/api/webhookcallback";
+            // ✅ align with your Meta dashboard: POST /api/webhooks/whatsapp
+            return $"{appBaseUrl.TrimEnd('/')}/api/webhooks/whatsapp";
         }
 
         public async Task<IReadOnlyList<WhatsAppSettingEntity>> GetAllForBusinessAsync(Guid businessId)
         {
-            // Return all rows (one per provider) for this business + include numbers collection
             var items = await _dbContext.WhatsAppSettings
                 .AsNoTracking()
                 .Where(s => s.BusinessId == businessId)
-                .Include(s => s.WhatsAppBusinessNumbers) // ✅ correct navigation include
+                .Include(s => s.WhatsAppBusinessNumbers)
                 .OrderBy(s => s.Provider)
                 .ToListAsync();
 
@@ -359,11 +353,9 @@ namespace xbytechat_api.WhatsAppSettings.Services
             if (string.IsNullOrWhiteSpace(provider)) return null;
             var prov = provider.Trim();
 
-            // case-insensitive provider match
             return await _dbContext.WhatsAppSettings
                 .AsNoTracking()
                 .FirstOrDefaultAsync(s => s.BusinessId == businessId && s.Provider.ToLower() == prov.ToLower());
         }
     }
 }
-

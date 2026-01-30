@@ -395,6 +395,7 @@ builder.Services.AddScoped<EnginePayloadBuilders.TemplateMessagePayloadBuilder>(
 builder.Services.AddScoped<EnginePayloadBuilders.CtaMessagePayloadBuilder>();
 builder.Services.AddScoped<IPlanManager, PlanManager>();
 builder.Services.AddScoped<ICTAManagementService, CTAManagementService>();
+builder.Services.AddScoped<IWabaSubscriptionClient, WabaSubscriptionClient>();
 //builder.Services.AddScoped<IWhatsAppProviderFactory, WhatsAppProviderFactory>();
 builder.Services.AddScoped<xbytechat.api.Features.MessagesEngine.Factory.IWhatsAppProviderFactory,
                            xbytechat.api.Features.MessagesEngine.Factory.WhatsAppProviderFactory>();

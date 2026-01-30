@@ -10,12 +10,11 @@ namespace xbytechat_api.WhatsAppSettings.Services
     {
         Task SaveOrUpdateSettingAsync(SaveWhatsAppSettingDto dto);
         Task<WhatsAppSettingsDto> GetSettingsByBusinessIdAsync(Guid businessId);
-        Task<bool> DeleteSettingsAsync(Guid businessId);
+        Task<bool> DeleteSettingsAsync(Guid businessId, CancellationToken ct = default);
         Task<string> TestConnectionAsync(SaveWhatsAppSettingDto dto);
-        Task<string?> GetSenderNumberAsync(Guid businessId);
         Task<string> GetCallbackUrlAsync(Guid businessId, string appBaseUrl);
         Task<IReadOnlyList<WhatsAppSettingEntity>> GetAllForBusinessAsync(Guid businessId);
         Task<WhatsAppSettingEntity?> GetSettingsByBusinessIdAndProviderAsync(Guid businessId, string provider);
-      
+
     }
 }
