@@ -10,6 +10,7 @@
 
         public string? PhoneNumberId { get; init; }  // from WhatsAppPhoneNumbers
         public string? WhatsAppBusinessNumber { get; init; }  // from WhatsAppPhoneNumbers
+        public string? SenderDisplayName { get; init; } // from WhatsAppPhoneNumbers
     }
 
 }

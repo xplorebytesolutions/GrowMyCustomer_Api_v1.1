@@ -13,6 +13,13 @@ namespace xbytechat.api.Features.WhatsAppSettings.Models
         public string WhatsAppBusinessNumber { get; set; } = null!;   // e.g., "+15551234567"
         public string? SenderDisplayName { get; set; }
 
+        public string? VerifiedName { get; set; }
+        public string? QualityRating { get; set; }        // GREEN, YELLOW, RED, UNKNOWN
+        public string? Status { get; set; }               // CONNECTED, RATE_LIMITED, FLAGGED, etc.
+        public string? NameStatus { get; set; }           // APPROVED, PENDING, DECLINED, etc.
+        public string? MessagingLimitTier { get; set; }   // TIER_250, etc.
+        public DateTime? ConnectionDataUpdatedAt { get; set; }
+
         public bool IsActive { get; set; } = true;
         public bool IsDefault { get; set; } = false;
 

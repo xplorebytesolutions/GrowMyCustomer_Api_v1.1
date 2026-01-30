@@ -404,8 +404,42 @@ namespace xbytechat_api.WhatsAppSettings.Controllers
 
 
 
-    }
 
+
+        // --------------------------------------------------
+        // Connection Summary (Health)
+        // --------------------------------------------------
+        [HttpGet("connection-summary")]
+        public async Task<IActionResult> GetConnectionSummary()
+        {
+            var businessId = User.GetBusinessId();
+            var summary = await _svc.GetConnectionSummaryAsync(businessId);
+            
+            // It's okay to return null or empty object if not connected yet
+            return Ok(new { success = true, data = summary });
+        }
+
+        [HttpPost("connection-summary/refresh")]
+        public async Task<IActionResult> RefreshConnectionSummary()
+        {
+            var businessId = User.GetBusinessId();
+            try
+            {
+                var summary = await _svc.RefreshConnectionSummaryAsync(businessId);
+                return Ok(new { success = true, data = summary });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to refresh connection summary for Business {BusinessId}", businessId);
+                return StatusCode(500, new { success = false, message = "Failed to refresh from Meta.", details = ex.Message });
+            }
+        }
+
+    }
 }
 
 
