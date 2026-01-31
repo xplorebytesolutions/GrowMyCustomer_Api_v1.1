@@ -369,21 +369,25 @@ namespace xbytechat_api.WhatsAppSettings.Services
 
         public async Task<WhatsAppConnectionSummaryDto?> GetConnectionSummaryAsync(Guid businessId)
         {
-            // Prefer the *Default* number for the summary card
-            var phoneRow = await _dbContext.WhatsAppPhoneNumbers
+            // 1. Fetch all active numbers for the business
+            var allNumbers = await _dbContext.WhatsAppPhoneNumbers
                 .AsNoTracking()
                 .Where(n => n.BusinessId == businessId && n.IsActive)
                 .OrderByDescending(n => n.IsDefault)
                 .ThenByDescending(n => n.UpdatedAt ?? n.CreatedAt)
-                .FirstOrDefaultAsync();
+                .ToListAsync();
 
-            if (phoneRow == null) return null;
+            if (!allNumbers.Any()) return null;
+
+            // 2. Use the primary (default or most recent) for the health summary
+            var phoneRow = allNumbers.First();
 
             return new WhatsAppConnectionSummaryDto
             {
                 BusinessId = phoneRow.BusinessId,
                 PhoneNumberId = phoneRow.PhoneNumberId,
                 WhatsAppBusinessNumber = phoneRow.WhatsAppBusinessNumber,
+                WhatsAppBusinessNumbers = allNumbers.Select(x => x.WhatsAppBusinessNumber).Where(x => x != null).Cast<string>().ToList(),
                 VerifiedName = phoneRow.VerifiedName,
                 QualityRating = phoneRow.QualityRating,
                 Status = phoneRow.Status,
@@ -468,12 +472,21 @@ namespace xbytechat_api.WhatsAppSettings.Services
 
             await _dbContext.SaveChangesAsync();
 
-            // 5. Return updated DTO
+            // 5. Fetch all active numbers for the business to include in DTO
+            var allNumbers = await _dbContext.WhatsAppPhoneNumbers
+                .AsNoTracking()
+                .Where(n => n.BusinessId == businessId && n.IsActive)
+                .OrderByDescending(n => n.IsDefault)
+                .ThenByDescending(n => n.UpdatedAt ?? n.CreatedAt)
+                .ToListAsync();
+
+            // 6. Return updated DTO
             return new WhatsAppConnectionSummaryDto
             {
                 BusinessId = phoneRow.BusinessId,
                 PhoneNumberId = phoneRow.PhoneNumberId,
                 WhatsAppBusinessNumber = phoneRow.WhatsAppBusinessNumber,
+                WhatsAppBusinessNumbers = allNumbers.Select(x => x.WhatsAppBusinessNumber).Where(x => x != null).Cast<string>().ToList(),
                 VerifiedName = phoneRow.VerifiedName,
                 QualityRating = phoneRow.QualityRating,
                 Status = phoneRow.Status,

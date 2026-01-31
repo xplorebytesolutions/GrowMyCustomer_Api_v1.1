@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace xbytechat.api.WhatsAppSettings.DTOs
 {
@@ -6,6 +7,7 @@ namespace xbytechat.api.WhatsAppSettings.DTOs
     {
         public Guid BusinessId { get; set; }
         public string? WhatsAppBusinessNumber { get; set; }
+        public List<string> WhatsAppBusinessNumbers { get; set; } = new();
         public string? PhoneNumberId { get; set; } // Metadata
 
         // Health Fields
