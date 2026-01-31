@@ -351,13 +351,28 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
                 _log.LogError(ex, "ESU Callback: Failed to write ESU completion flag for biz={BusinessId}", businessId);
             }
 
-            // 6) FINAL REDIRECT
+            // 6) AUTO-REGISTER (HYBRID FLOW: Try "123456", fallback to UI if mismatch)
+            string finalStatus = "success";
+            try 
+            {
+               await RegisterPhoneNumberAsync(businessId, "123456", ct);
+               _log.LogInformation("ESU Callback: Auto-registration with default PIN success for biz={BusinessId}", businessId);
+            }
+            catch (Exception ex) 
+            {
+               // If it's a conflict or specific error, we need the user to enter their old PIN
+               // 409 Conflict is typical for "PIN mismatch" or "Already registered with different PIN"
+               _log.LogWarning("ESU Callback: Auto-registration failed (biz={BusinessId}). User must enter PIN manually. Error: {Error}", businessId, ex.Message);
+               finalStatus = "needs_pin";
+            }
+
+            // 7) FINAL REDIRECT
             var rawReturnUrl = TryGetReturnUrlFromState(state);
             var redirectBase = SanitizeReturnUrlOrDefault(rawReturnUrl, "/app/welcomepage");
 
             var redirect = redirectBase.Contains("?")
-                ? $"{redirectBase}&esuStatus=success"
-                : $"{redirectBase}?esuStatus=success";
+                ? $"{redirectBase}&esuStatus={finalStatus}"
+                : $"{redirectBase}?esuStatus={finalStatus}";
 
             return new FacebookEsuCallbackResponseDto { RedirectTo = redirect };
         }
