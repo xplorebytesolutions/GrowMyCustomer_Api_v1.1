@@ -13,6 +13,7 @@ using xbytechat.api.Features.ESU.Facebook.Abstractions;
 using xbytechat.api.Features.ESU.Facebook.Contracts;
 using xbytechat.api.Features.ESU.Facebook.DTOs;
 using xbytechat.api.Features.ESU.Facebook.Options;
+using xbytechat.api.Features.ESU.Facebook.Clients;
 using xbytechat.api.Features.ESU.Shared;
 using xbytechat.api.Features.WhatsAppSettings.Services;
 using xbytechat.api.WhatsAppSettings.DTOs;
@@ -36,6 +37,7 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
         private readonly IWhatsAppPhoneNumberService _waPhones;
         private readonly ILogger<FacebookEsuService> _log;
         private readonly IEsuStatusService _esuStatus;
+        private readonly IWabaSubscriptionClient _wabaSubscription;
 
         public FacebookEsuService(
             IOptions<EsuOptions> options,
@@ -48,7 +50,8 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
             IWhatsAppPhoneNumberService waPhones,
             IOptions<FacebookOauthOptions> oauthOpts,
             ILogger<FacebookEsuService> log,
-            IEsuStatusService esuStatus)
+            IEsuStatusService esuStatus,
+            IWabaSubscriptionClient wabaSubscription)
         {
             _options = options;
             _stateStore = stateStore;
@@ -61,6 +64,7 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
             _oauthOpts = oauthOpts;
             _log = log;
             _esuStatus = esuStatus;
+            _wabaSubscription = wabaSubscription;
         }
 
         // =======================
@@ -410,6 +414,24 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
                     var graphVer = _oauthOpts.Value.GraphApiVersion?.Trim('/') ?? "v20.0";
                     var apiBase = $"{graphBase}/{graphVer}";
 
+                    // 1a) Unsubscribe WABA from app (CRITICAL for clean re-signup)
+                    try 
+                    {
+                        var setting = await _waSettings.GetSettingsByBusinessIdAsync(businessId);
+                        if (setting is not null && !string.IsNullOrWhiteSpace(setting.WabaId))
+                        {
+                            _log.LogInformation("ESU Disconnect: attempting Meta WABA unsubscribe for biz={BusinessId}, waba={WabaId}", 
+                                businessId, setting.WabaId);
+                            
+                            await _wabaSubscription.UnsubscribeAsync(setting.WabaId, t.AccessToken, ct);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogWarning(ex, "ESU Disconnect: Meta WABA unsubscribe failed (non-blocking) for biz={BusinessId}", businessId);
+                    }
+
+                    // 1b) Revoke permissions
                     using var http = new HttpClient();
                     http.DefaultRequestHeaders.Authorization =
                         new AuthenticationHeaderValue("Bearer", t.AccessToken);
