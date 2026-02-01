@@ -68,17 +68,17 @@ namespace xbytechat.api.Features.WhatsAppSettings.Services
             var providerCanon = (s.Provider ?? provider ?? string.Empty)
                 .Trim().Replace("-", "_").Replace(" ", "_").ToUpperInvariant();
 
-            List<(string PhoneId, string Number, string? Label)> list = providerCanon switch
+            List<(string PhoneId, string Number, string? Label, string? Status)> list = providerCanon switch
             {
                 "META_CLOUD" => await FetchFromMetaAsync(s, ct),
                 "PINNACLE" => await FetchFromPinnacleAsync(s, ct),
-                _ => new List<(string PhoneId, string Number, string? Label)>()
+                _ => new List<(string PhoneId, string Number, string? Label, string? Status)>()
             };
 
             var added = 0;
             var updated = 0;
 
-            foreach (var (phoneId, number, label) in list)
+            foreach (var (phoneId, number, label, status) in list)
             {
                 var existing = await _db.WhatsAppPhoneNumbers
                     .FirstOrDefaultAsync(x =>
@@ -96,6 +96,7 @@ namespace xbytechat.api.Features.WhatsAppSettings.Services
                         PhoneNumberId = phoneId,
                         WhatsAppBusinessNumber = number,
                         SenderDisplayName = string.IsNullOrWhiteSpace(label) ? null : label,
+                        Status = status,
                         IsActive = true,
                         IsDefault = false
                     });
@@ -106,6 +107,7 @@ namespace xbytechat.api.Features.WhatsAppSettings.Services
                     existing.WhatsAppBusinessNumber = number;
                     if (!string.IsNullOrWhiteSpace(label))
                         existing.SenderDisplayName = label;
+                    existing.Status = status;
                     existing.IsActive = true;
                     updated++;
                 }
@@ -115,11 +117,11 @@ namespace xbytechat.api.Features.WhatsAppSettings.Services
             return (added, updated, list.Count);
         }
 
-        private async Task<List<(string PhoneId, string Number, string? Label)>> FetchFromMetaAsync(
+        private async Task<List<(string PhoneId, string Number, string? Label, string? Status)>> FetchFromMetaAsync(
             WhatsAppSettingsDto s,
             CancellationToken ct)
         {
-            var list = new List<(string, string, string?)>();
+            var list = new List<(string, string, string?, string?)>();
 
             if (string.IsNullOrWhiteSpace(s.ApiKey) || string.IsNullOrWhiteSpace(s.WabaId))
                 return list;
@@ -128,7 +130,7 @@ namespace xbytechat.api.Features.WhatsAppSettings.Services
                 ? "https://graph.facebook.com/v22.0"
                 : s.ApiUrl.TrimEnd('/');
 
-            var url = $"{baseUrl}/{s.WabaId}/phone_numbers?limit=100";
+            var url = $"{baseUrl}/{s.WabaId}/phone_numbers?fields=id,display_phone_number,verified_name,status&limit=100";
 
             using var http = new HttpClient();
             http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", s.ApiKey);
@@ -161,19 +163,21 @@ namespace xbytechat.api.Features.WhatsAppSettings.Services
                              : e.TryGetProperty("name", out var nm) ? nm.GetString()
                              : null;
 
+                    var status = e.TryGetProperty("status", out var stEl) ? stEl.GetString() : null;
+
                     if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(num))
-                        list.Add((id!, num!, name));
+                        list.Add((id!, num!, name, status));
                 }
             }
 
             return list;
         }
 
-        private async Task<List<(string PhoneId, string Number, string? Label)>> FetchFromPinnacleAsync(
+        private async Task<List<(string PhoneId, string Number, string? Label, string? Status)>> FetchFromPinnacleAsync(
             WhatsAppSettingsDto s,
             CancellationToken ct)
         {
-            var list = new List<(string, string, string?)>();
+            var list = new List<(string, string, string?, string?)>();
 
             if (string.IsNullOrWhiteSpace(s.ApiKey))
                 return list;
@@ -230,7 +234,7 @@ namespace xbytechat.api.Features.WhatsAppSettings.Services
                              : null;
 
                     if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(num))
-                        list.Add((id!, num!, name));
+                        list.Add((id!, num!, name, null));
                 }
             }
 
@@ -241,7 +245,7 @@ namespace xbytechat.api.Features.WhatsAppSettings.Services
         private static string NormalizeMetaBase(string? apiUrl)
                         => string.IsNullOrWhiteSpace(apiUrl) ? "https://graph.facebook.com/v22.0" : apiUrl.Trim();
 
-        private async Task<List<(string PhoneId, string Number, string? Label)>> FetchFromMetaAsync(
+        private async Task<List<(string PhoneId, string Number, string? Label, string? Status)>> FetchFromMetaAsync(
             WhatsAppSettingEntity s, CancellationToken ct)
         {
             var baseUrl = NormalizeMetaBase(s.ApiUrl);
@@ -249,12 +253,12 @@ namespace xbytechat.api.Features.WhatsAppSettings.Services
             http.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", s.ApiKey!.Trim());
 
-            var list = new List<(string, string, string?)>();
+            var list = new List<(string, string, string?, string?)>();
             string? after = null;
 
             do
             {
-                var url = $"{baseUrl}/{s.WabaId}/phone_numbers?fields=id,display_phone_number,verified_name";
+                var url = $"{baseUrl}/{s.WabaId}/phone_numbers?fields=id,display_phone_number,verified_name,status";
                 if (!string.IsNullOrEmpty(after)) url += $"&after={WebUtility.UrlEncode(after)}";
 
                 var json = await http.GetStringAsync(url, ct);
@@ -268,8 +272,9 @@ namespace xbytechat.api.Features.WhatsAppSettings.Services
                         var id = e.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
                         var num = e.TryGetProperty("display_phone_number", out var nEl) ? nEl.GetString() : null;
                         var name = e.TryGetProperty("verified_name", out var lEl) ? lEl.GetString() : null;
+                        var status = e.TryGetProperty("status", out var stEl) ? stEl.GetString() : null;
                         if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(num))
-                            list.Add((id!, num!, name));
+                            list.Add((id!, num!, name, status));
                     }
                 }
 

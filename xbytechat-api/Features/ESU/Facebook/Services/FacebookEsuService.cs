@@ -352,23 +352,34 @@ namespace xbytechat.api.Features.ESU.Facebook.Services
             }
 
             // 6) AUTO-REGISTER (HYBRID FLOW: Try "123456", fallback to UI if mismatch)
+            // CHECK STATUS FIRST: If any number is already CONNECTED, skip registration.
+            var phones = await _waPhones.ListAsync(businessId, Provider, ct);
+            bool alreadyConnected = phones.Any(p => p.Status?.ToUpper() == "CONNECTED");
+
             string finalStatus = "success";
-            try 
+            if (!alreadyConnected) 
             {
-               await RegisterPhoneNumberAsync(businessId, "123456", ct);
-               _log.LogInformation("ESU Callback: Auto-registration with default PIN success for biz={BusinessId}", businessId);
+                try 
+                {
+                   await RegisterPhoneNumberAsync(businessId, "123456", ct);
+                   _log.LogInformation("ESU Callback: Auto-registration with default PIN success for biz={BusinessId}", businessId);
+                }
+                catch (Exception ex) 
+                {
+                   // If it's a conflict or specific error, we need the user to enter their old PIN
+                   // 409 Conflict is typical for "PIN mismatch" or "Already registered with different PIN"
+                   _log.LogWarning("ESU Callback: Auto-registration failed (biz={BusinessId}). User must enter PIN manually. Error: {Error}", businessId, ex.Message);
+                   finalStatus = "needs_pin";
+                }
             }
-            catch (Exception ex) 
+            else 
             {
-               // If it's a conflict or specific error, we need the user to enter their old PIN
-               // 409 Conflict is typical for "PIN mismatch" or "Already registered with different PIN"
-               _log.LogWarning("ESU Callback: Auto-registration failed (biz={BusinessId}). User must enter PIN manually. Error: {Error}", businessId, ex.Message);
-               finalStatus = "needs_pin";
+                _log.LogInformation("ESU Callback: Phone(s) already CONNECTED for biz={BusinessId}. Skipping auto-registration.", businessId);
             }
 
             // 7) FINAL REDIRECT
             var rawReturnUrl = TryGetReturnUrlFromState(state);
-            var redirectBase = SanitizeReturnUrlOrDefault(rawReturnUrl, "/app/welcomepage");
+            var redirectBase = SanitizeReturnUrlOrDefault(rawReturnUrl, "/app/esu-processing");
 
             var redirect = redirectBase.Contains("?")
                 ? $"{redirectBase}&esuStatus={finalStatus}"
