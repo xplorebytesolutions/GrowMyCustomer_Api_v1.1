@@ -137,7 +137,7 @@ namespace xbytechat.api.WhatsAppSettings.Providers
                         string? subCat = tpl?.sub_category?.ToString();
                         string externalId = tpl?.id?.ToString() ?? "";
 
-                        if (status != "APPROVED" && status != "ACTIVE")
+                        if (status != "APPROVED" && status != "ACTIVE" && status != "PENDING_REVIEW" && status != "IN_REVIEW")
                             continue;
 
                         string body = "";

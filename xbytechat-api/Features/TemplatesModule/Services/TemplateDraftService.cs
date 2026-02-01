@@ -223,16 +223,23 @@ public sealed class TemplateDraftService : ITemplateDraftService
 
     public async Task<IReadOnlyList<DraftListItemDto>> ListDraftsAsync(Guid businessId, CancellationToken ct = default)
     {
-        // Exclude drafts that have essentially become "Approved" or "Synced" templates.
-        var submittedTemplateNames = _db.WhatsAppTemplates
+        // Exclude drafts that have been submitted (SubmittedAt is not null)
+        // Also exclude drafts that match synced templates (belt-and-suspenders approach)
+        var submittedTemplateNames = await _db.WhatsAppTemplates
             .Where(t => t.BusinessId == businessId)
-            .Select(t => t.Name)
-            .Distinct();
+            .Select(t => t.Name.ToLower())
+            .Distinct()
+            .ToListAsync(ct);
 
         // Join Drafts with their Default Variant to get preview content
         var query = from d in _db.TemplateDrafts.AsNoTracking()
-                    where d.BusinessId == businessId && !submittedTemplateNames.Contains(d.Key)
+                    where d.BusinessId == businessId 
+                       && d.SubmittedAt == null 
+                       && !submittedTemplateNames.Contains(d.Key)
                     let v = _db.TemplateDraftVariants.FirstOrDefault(x => x.TemplateDraftId == d.Id && x.Language == d.DefaultLanguage)
+                    // 🗑️ Filter out "empty" drafts (Untitled + No Content)
+                    where !d.Key.StartsWith("untitled_") 
+                          || (v != null && (!string.IsNullOrWhiteSpace(v.BodyText) || v.HeaderType != "NONE"))
                     orderby d.UpdatedAt descending
                     select new DraftListItemDto
                     {

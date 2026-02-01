@@ -9,5 +9,6 @@ public sealed class TemplateDraft
     public string DefaultLanguage { get; set; } = "en_US";
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? SubmittedAt { get; set; }                   // When submitted to Meta (null = not submitted)
     public string? CreatedByUserId { get; set; }
 }

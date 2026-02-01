@@ -29,10 +29,25 @@ namespace xbytechat.api.WhatsAppSettings.Controllers
                 .Select(g => new { Status = g.Key, Count = g.Count() })
                 .ToListAsync();
 
-            var draftCount = await _db.TemplateDrafts
+            var submittedTemplateNames = await _db.WhatsAppTemplates
                 .AsNoTracking()
                 .Where(x => x.BusinessId == businessId)
-                .CountAsync();
+                .Select(x => x.Name.ToLower())
+                .Distinct()
+                .ToListAsync();
+
+            var draftCount = await (
+                from d in _db.TemplateDrafts.AsNoTracking()
+                join v in _db.TemplateDraftVariants.AsNoTracking() 
+                  on new { Did = d.Id, Lang = d.DefaultLanguage } equals new { Did = v.TemplateDraftId, Lang = v.Language } into g
+                from v in g.DefaultIfEmpty()
+                where d.BusinessId == businessId 
+                   && d.SubmittedAt == null
+                   && !submittedTemplateNames.Contains(d.Key)
+                   // 🗑️ Filter out "empty" drafts (Untitled + No Content)
+                   && (!d.Key.StartsWith("untitled_") || (v != null && (!string.IsNullOrWhiteSpace(v.BodyText) || v.HeaderType != "NONE")))
+                select d.Id
+            ).CountAsync();
 
             var libraryCount = await _db.TemplateLibraryItems
                 .AsNoTracking()
@@ -42,7 +57,7 @@ namespace xbytechat.api.WhatsAppSettings.Controllers
             {
                 success = true,
                 approved = stats.FirstOrDefault(s => s.Status == "APPROVED")?.Count ?? 0,
-                pending = stats.FirstOrDefault(s => s.Status == "PENDING" || s.Status == "PENDING_APPROVAL")?.Count ?? 0,
+                pending = stats.Where(s => s.Status == "PENDING" || s.Status == "PENDING_APPROVAL" || s.Status == "PENDING_REVIEW" || s.Status == "IN_REVIEW").Sum(s => s.Count),
                 rejected = stats.FirstOrDefault(s => s.Status == "REJECTED")?.Count ?? 0,
                 drafts = draftCount,
                 library = libraryCount
@@ -87,7 +102,14 @@ namespace xbytechat.api.WhatsAppSettings.Controllers
             if (!string.IsNullOrWhiteSpace(status) && !status.Equals("ALL", StringComparison.OrdinalIgnoreCase))
             {
                 var s = status.Trim().ToUpperInvariant();
-                query = query.Where(x => x.Status == s);
+                if (s == "PENDING")
+                {
+                    query = query.Where(x => x.Status == "PENDING" || x.Status == "PENDING_APPROVAL" || x.Status == "PENDING_REVIEW" || x.Status == "IN_REVIEW");
+                }
+                else
+                {
+                    query = query.Where(x => x.Status == s);
+                }
             }
 
             if (!string.IsNullOrWhiteSpace(language))
@@ -346,6 +368,55 @@ namespace xbytechat.api.WhatsAppSettings.Controllers
             catch
             {
                 // ignore parse errors; just return other fields
+            }
+
+            // Fallback: If Pending (optimistic) and no buttons found in RawJson, try to load from Draft
+            if (buttons.Count == 0 && (tpl.Status == "PENDING" || tpl.Status == "PENDING_APPROVAL" || tpl.Status == "IN_REVIEW"))
+            {
+               var draft = await _db.TemplateDrafts
+                   .AsNoTracking()
+                   .Where(d => d.BusinessId == businessId && d.Key == tpl.Name)
+                   .OrderByDescending(d => d.UpdatedAt)
+                   .FirstOrDefaultAsync();
+               
+               if (draft != null)
+               {
+                   var variant = await _db.TemplateDraftVariants
+                       .AsNoTracking()
+                       .FirstOrDefaultAsync(v => v.TemplateDraftId == draft.Id && v.Language == tpl.LanguageCode);
+                       
+                   if (variant != null && !string.IsNullOrEmpty(variant.ButtonsJson))
+                   {
+                        try {
+                            var dtos = System.Text.Json.JsonSerializer.Deserialize<List<xbytechat.api.Features.TemplateModule.DTOs.ButtonDto>>(variant.ButtonsJson, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+                            if (dtos != null) 
+                            {
+                                int idx = 0;
+                                foreach(var b in dtos) {
+                                     string subType = b.Type.ToUpperInvariant() switch
+                                    {
+                                        "URL" => "url",
+                                        "PHONE" => "voice_call",
+                                        "PHONE_NUMBER" => "voice_call",
+                                        "QUICK_REPLY" => "quick_reply",
+                                        "COPY_CODE" => "copy_code",
+                                        _ => "unknown"
+                                    };
+                                    
+                                    string? param = b.Url ?? b.Phone;
+
+                                    buttons.Add(new {
+                                        text = b.Text,
+                                        type = b.Type.ToUpperInvariant() == "PHONE" ? "PHONE_NUMBER" : b.Type.ToUpperInvariant(),
+                                        subType,
+                                        index = (int?)idx++,
+                                        parameterValue = param
+                                    });
+                                }
+                            }
+                        } catch {}
+                   }
+               }
             }
 
             return Ok(new

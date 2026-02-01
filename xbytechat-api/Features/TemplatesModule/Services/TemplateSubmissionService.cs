@@ -26,7 +26,6 @@ public sealed class TemplateSubmissionService : ITemplateSubmissionService
     {
         // 1) Load draft + variants
         var draft = await _db.TemplateDrafts
-            .AsNoTracking()
             .FirstOrDefaultAsync(x => x.Id == draftId && x.BusinessId == businessId, ct);
         if (draft is null)
             return new TemplateSubmitResponseDto { Success = false, Message = "Draft not found." };
@@ -147,6 +146,81 @@ public sealed class TemplateSubmissionService : ITemplateSubmissionService
         }
 
         var success = results.All(r => r.Status == "PENDING");
+
+        // Mark draft as submitted immediately (don't wait for sync)
+        if (success)
+        {
+            draft.SubmittedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync(ct);
+        }
+
+        // 🔄 Optimistically Create/Update Local "Pending" Records
+        if (success)
+        {
+            var now = DateTime.UtcNow;
+            Console.WriteLine($"[Submission] Optimistically creating pending records for {variants.Count} variants.");
+
+            foreach (var v in variants)
+            {
+                var lang = v.Language;
+                var existingTpl = await _db.WhatsAppTemplates
+                    .FirstOrDefaultAsync(x => x.BusinessId == businessId && x.Name == name && x.LanguageCode == lang, ct);
+
+                if (existingTpl == null)
+                {
+                    Console.WriteLine($"[Submission] Creating NEW pending template: {name} ({lang})");
+                    // Re-build payload to store in RawJson for preview purposes
+                    var buttons = SafeDeserialize<List<ButtonDto>>(v.ButtonsJson) ?? new();
+                    var examples = SafeDeserialize<Dictionary<string, string>>(v.ExampleParamsJson) ?? new();
+                    // We don't upload media here again; just use local URL as placeholder if needed, or null. 
+                    // Preview doesn't use the media ID from RawJson, it uses HeaderMediaUrl if available, 
+                    // or falls back to 'header_handle' in 'example'.
+                    
+                    var (comps, _) = MetaComponentsBuilder.Build(
+                        v.HeaderType, 
+                        v.HeaderText, 
+                        null, // metaId not needed for preview structure
+                        v.BodyText, 
+                        v.FooterText, 
+                        buttons, 
+                        examples);
+
+                    var rawObj = new { components = comps };
+                    var rawJson = JsonSerializer.Serialize(rawObj, JsonOpts);
+
+                    existingTpl = new xbytechat.api.AuthModule.Models.WhatsAppTemplate
+                    {
+                        Id = Guid.NewGuid(),
+                        BusinessId = businessId,
+                        Name = name,
+                        LanguageCode = lang,
+                        Category = draft.Category,
+                        Status = "PENDING", 
+                        Provider = "META_CLOUD", 
+                        IsActive = true,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                        LastSyncedAt = now,
+                        Body = v.BodyText,
+                        HeaderKind = (v.HeaderType ?? "NONE").ToLowerInvariant(),
+                        HeaderText = v.HeaderText,
+                        RawJson = rawJson 
+                    };
+                    _db.WhatsAppTemplates.Add(existingTpl);
+                }
+                else
+                {
+                    Console.WriteLine($"[Submission] Updating EXISTING template to PENDING: {name} ({lang})");
+                    existingTpl.Status = "PENDING";
+                    existingTpl.Body = v.BodyText;
+                    existingTpl.UpdatedAt = now;
+                    // Ensure active if it was deleted/inactive
+                    existingTpl.IsActive = true; 
+                }
+            }
+            await _db.SaveChangesAsync(ct);
+            Console.WriteLine("[Submission] Optimistic records saved.");
+        }
 
         // 🔄 Auto-sync only if every language submitted OK
         if (success)

@@ -48,7 +48,7 @@ namespace xbytechat.api.WhatsAppSettings.Providers
                     {
                         // status filter
                         string status = (tpl.status?.ToString() ?? "").ToUpperInvariant();
-                        if (status != "APPROVED" && status != "ACTIVE") continue;
+                        if (status != "APPROVED" && status != "ACTIVE" && status != "PENDING_REVIEW" && status != "IN_REVIEW") continue;
 
                         string name = tpl.name?.ToString() ?? "";
                         string language = tpl.language?.ToString() ?? "en_US";
