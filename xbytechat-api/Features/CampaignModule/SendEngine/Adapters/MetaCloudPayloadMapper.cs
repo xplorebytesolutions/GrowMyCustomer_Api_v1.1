@@ -85,7 +85,7 @@ namespace xbytechat.api.Features.CampaignModule.SendEngine
                                 Type: "header",
                                 Parameters: new[]
                                 {
-                                    new MetaMediaParam("image", Image: new MetaMediaLink(env.HeaderUrl!))
+                                    new MetaMediaParam("image", Image: CreateMediaLink(env.HeaderUrl!))
                                 }
                             ));
                         }
@@ -103,7 +103,7 @@ namespace xbytechat.api.Features.CampaignModule.SendEngine
                                 Type: "header",
                                 Parameters: new[]
                                 {
-                                    new MetaMediaParam("video", Video: new MetaMediaLink(env.HeaderUrl!))
+                                    new MetaMediaParam("video", Video: CreateMediaLink(env.HeaderUrl!))
                                 }
                             ));
                         }
@@ -121,7 +121,7 @@ namespace xbytechat.api.Features.CampaignModule.SendEngine
                                 Type: "header",
                                 Parameters: new[]
                                 {
-                                    new MetaMediaParam("document", Document: new MetaMediaLink(env.HeaderUrl!))
+                                    new MetaMediaParam("document", Document: CreateMediaLink(env.HeaderUrl!))
                                 }
                             ));
                         }
@@ -188,6 +188,20 @@ namespace xbytechat.api.Features.CampaignModule.SendEngine
             }
 
             return list;
+        }
+
+        private MetaMediaLink CreateMediaLink(string url)
+        {
+            if (url.StartsWith("handle:", StringComparison.OrdinalIgnoreCase))
+            {
+                var identifier = url.Substring(7);
+                _log.LogInformation("MetaMapper: Mapping media handle/id: {Identifier}", identifier);
+                // For Template messages, handles must be passed in the "id" field
+                return new MetaMediaLink(Id: identifier);
+            }
+            
+            _log.LogInformation("MetaMapper: Mapping media URL: {Url}", url);
+            return new MetaMediaLink(Link: url);
         }
 
         /// <summary>

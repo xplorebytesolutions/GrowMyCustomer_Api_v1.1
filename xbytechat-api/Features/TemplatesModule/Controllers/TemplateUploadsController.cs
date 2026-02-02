@@ -128,6 +128,74 @@ public sealed class TemplateUploadsController : ControllerBase
             return BadRequest(new { success = false, message = ex.Message });
         }
     }
+
+    // POST /api/template-builder/uploads/standalone
+    [HttpPost("standalone")]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(64_000_000)]
+    [ProducesResponseType(typeof(object), StatusCodes.Status200OK)]
+    public async Task<ActionResult<object>> UploadStandalone([FromForm] StandaloneUploadForm form, CancellationToken ct)
+    {
+        var businessId = User.GetBusinessId();
+        if (businessId == Guid.Empty)
+            return Unauthorized(new { success = false, message = "Invalid or missing BusinessId claim." });
+
+        if (form is null) return BadRequest(new { success = false, message = "Empty form." });
+
+        if ((form.File is null && string.IsNullOrWhiteSpace(form.SourceUrl)) ||
+            (form.File is not null && !string.IsNullOrWhiteSpace(form.SourceUrl)))
+        {
+            return BadRequest(new { success = false, message = "Provide either a file or a sourceUrl (not both)." });
+        }
+
+        if (!Enum.TryParse<HeaderMediaType>(form.MediaType?.Trim(), true, out var kind))
+            return BadRequest(new { success = false, message = "mediaType must be IMAGE, VIDEO, or DOCUMENT." });
+
+        Stream? stream = null;
+        string? fileName = form.FileName;
+        if (form.File is not null)
+        {
+            if (form.File.Length <= 0) return BadRequest(new { success = false, message = "Empty file." });
+            stream = form.File.OpenReadStream();
+            fileName ??= form.File.FileName;
+        }
+
+        try
+        {
+            var result = await _uploader.UploadHeaderAsync(
+                businessId: businessId,
+                mediaType: kind,
+                fileStream: stream,
+                fileName: fileName,
+                sourceUrl: form.SourceUrl,
+                ct: ct
+            );
+
+            return Ok(new
+            {
+                success = true,
+                message = result.IsStub ? "Uploaded (stub)." : "Uploaded successfully.",
+                mediaType = kind.ToString(),
+                handle = result.Handle,
+                mime = result.MimeType,
+                bytes = result.SizeBytes,
+                isStub = result.IsStub
+            });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { success = false, message = ex.Message });
+        }
+    }
+
+    public sealed class StandaloneUploadForm
+    {
+        [Required]
+        public string MediaType { get; set; } = default!;
+        public IFormFile? File { get; set; }
+        public string? SourceUrl { get; set; }
+        public string? FileName { get; set; }
+    }
 }
 
 

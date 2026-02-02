@@ -137,13 +137,36 @@ public sealed class MetaUploadService : IMetaUploadService
              c.WabaId, mediaType, mime, size);
 
 
-        // Path A: uploads session
-        // Primary method for Templates.
-        // Returns a handle (4::...) OR a resolved numeric ID if possible.
-        var handle = await TryPathA_UploadsEndpointAsync(client, c.WabaId, fileTypeParam, new NonDisposableStream(content), fileName, mime, size, ct);
-        if (!string.IsNullOrWhiteSpace(handle))
+        // Path C: Classic (Numeric ID) - PROMOTED to Primary for Template compatibility
+        // Returns a numeric Media ID (e.g. "12345...") which is strictly required by the Cloud API for template headers.
+        try 
         {
-            return new HeaderUploadResult(handle!, mime, size, false);
+             var targetId = !string.IsNullOrWhiteSpace(c.PhoneNumberId) ? c.PhoneNumberId : c.WabaId;
+             _logger.LogInformation("MetaUpload: Attempting Path C (Classic) for TargetId={TargetId}...", targetId);
+             var handleC = await TryPathC_ClassicMediaEndpointAsync(client, targetId!, new NonDisposableStream(content), fileName, mime, size, ct);
+             if (!string.IsNullOrWhiteSpace(handleC))
+             {
+                _logger.LogInformation("MetaUpload: Path C Success. MediaId={MediaId}", handleC);
+                return new HeaderUploadResult(handleC!, mime, size, false);
+             }
+        }
+        catch (Exception ex)
+        {
+             _logger.LogWarning(ex, "MetaUpload: Path C (Classic) failed. Falling back to Path A/B.");
+        }
+
+        // Rewind
+        try { content.Position = 0; } catch { }
+
+        // Path A: uploads session (Fallback for larger files)
+        // Returns a handle (4::...) OR a resolved numeric ID if possible.
+        var handleA = await TryPathA_UploadsEndpointAsync(client, c.WabaId, fileTypeParam, new NonDisposableStream(content), fileName, mime, size, ct);
+        if (!string.IsNullOrWhiteSpace(handleA))
+        {
+            _logger.LogInformation("MetaUpload: Path A Success. Handle={Handle}. Attempting resolution...", handleA);
+            var resolvedId = await ResolveMediaIdAsync(client, handleA!, null, ct);
+            _logger.LogInformation("MetaUpload: Path A Final Result={Result}", resolvedId);
+            return new HeaderUploadResult(resolvedId, mime, size, false);
         }
 
         // Rewind
@@ -152,28 +175,18 @@ public sealed class MetaUploadService : IMetaUploadService
         // Path B: Phased (Fallback)
         var handleB = await TryPathB_PhasedUploadAsync(client, c.WabaId, fileTypeParam, new NonDisposableStream(content), fileName, mime, size, ct);
         if (!string.IsNullOrWhiteSpace(handleB))
-             return new HeaderUploadResult(handleB!, mime, size, false);
-             
-        // Path C: Classic (Numeric ID) - Low Priority / Fallback
-        // The numeric ID returned by this path is currently REJECTED by Template API.
-        // We keep it as a last resort or if future API versions accept it.
-        try 
         {
-             var targetId = !string.IsNullOrWhiteSpace(c.PhoneNumberId) ? c.PhoneNumberId : c.WabaId;
-             var handleC = await TryPathC_ClassicMediaEndpointAsync(client, targetId!, new NonDisposableStream(content), fileName, mime, size, ct);
-             if (!string.IsNullOrWhiteSpace(handleC))
-                return new HeaderUploadResult(handleC!, mime, size, false);
-        }
-        catch (Exception ex)
-        {
-             _logger.LogWarning(ex, "Meta Upload Path C (Classic) failed.");
+             _logger.LogInformation("MetaUpload: Path B Success. Handle={Handle}. Attempting resolution...", handleB);
+             var resolvedId = await ResolveMediaIdAsync(client, handleB!, null, ct);
+             return new HeaderUploadResult(resolvedId, mime, size, false);
         }
 
         // Path B Retry (just in case flow falls here unexpectedly)
-        handle = await TryPathB_PhasedUploadAsync(client, c.WabaId, fileTypeParam, content, fileName, mime, size, ct);
-        if (!string.IsNullOrWhiteSpace(handle))
+        var handleRetry = await TryPathB_PhasedUploadAsync(client, c.WabaId, fileTypeParam, content, fileName, mime, size, ct);
+        if (!string.IsNullOrWhiteSpace(handleRetry))
         {
-            return new HeaderUploadResult(handle!, mime, size, false);
+            var resolvedId = await ResolveMediaIdAsync(client, handleRetry!, null, ct);
+            return new HeaderUploadResult(resolvedId, mime, size, false);
         }
 
         throw new InvalidOperationException("Meta upload did not return an asset handle. Check app permissions and the response logs.");

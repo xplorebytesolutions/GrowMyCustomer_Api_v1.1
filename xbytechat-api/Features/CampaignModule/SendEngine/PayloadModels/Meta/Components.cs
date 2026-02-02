@@ -25,7 +25,11 @@ namespace xbytechat.api.Features.CampaignModule.SendEngine.PayloadModels.Meta
         [property: JsonPropertyName("document")] MetaMediaLink? Document = null
     );
 
-    public sealed record MetaMediaLink([property: JsonPropertyName("link")] string Link);
+    public sealed record MetaMediaLink(
+        [property: JsonPropertyName("link")] string? Link = null,
+        [property: JsonPropertyName("handle")] string? Handle = null,
+        [property: JsonPropertyName("id")] string? Id = null
+    );
 
     public sealed record MetaBodyComponent(
         [property: JsonPropertyName("type")] string Type, // "body"
