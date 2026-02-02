@@ -137,11 +137,23 @@ public sealed class TemplateSubmissionService : ITemplateSubmissionService
                 ct: ct
             );
 
+            string? friendlyError = null;
+            if (!created.Success)
+            {
+                var err = created.Error ?? "Meta create call failed.";
+                if (err.Contains("subcode 2388042"))
+                    friendlyError = "Meta rejected the template body structure. This category (like Authentication) may not allow custom text or specific formatting.";
+                else if (err.ToLower().Contains("variables can't be at the start or end") || err.ToLower().Contains("leading or trailing params"))
+                    friendlyError = "Variables cannot be at the very start or very end of the text.";
+                else
+                    friendlyError = err;
+            }
+
             results.Add(new SubmittedVariantResult
             {
                 Language = v.Language,
                 Status = created.Success ? "PENDING" : "FAILED",
-                RejectionReason = created.Success ? null : (created.Error ?? "Meta create call failed.")
+                RejectionReason = created.Success ? null : friendlyError
             });
         }
 

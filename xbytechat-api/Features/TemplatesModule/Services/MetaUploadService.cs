@@ -136,21 +136,6 @@ public sealed class MetaUploadService : IMetaUploadService
         _logger.LogInformation("Starting Meta Upload. WABA: {WabaId}, Type: {Type}, Mime: {Mime}, Size: {Size}", 
              c.WabaId, mediaType, mime, size);
 
-        // ── Path C: Classic (Numeric ID) - HIGH PRIORITY ─────────────────────────
-        try 
-        {
-             var targetId = !string.IsNullOrWhiteSpace(c.PhoneNumberId) ? c.PhoneNumberId : c.WabaId;
-             var handleC = await TryPathC_ClassicMediaEndpointAsync(client, targetId!, new NonDisposableStream(content), fileName, mime, size, ct);
-             if (!string.IsNullOrWhiteSpace(handleC))
-             {
-                 _logger.LogInformation("Path C (Classic) succeeded provided ID: {Handle}", handleC);
-                 return new HeaderUploadResult(handleC!, mime, size, false);
-             }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Path C (Classic) failed. Falling back to Resumable.");
-        }
 
         // Path A: uploads session
         // Primary method for Templates.
@@ -238,7 +223,7 @@ public sealed class MetaUploadService : IMetaUploadService
 
         // TRANSFER (single range)
         // Use absolute URI to prevent "scheme not supported" error on "upload:xxx"
-        using (var req = new HttpRequestMessage(HttpMethod.Post, $"{client.BaseAddress}{uploadId}"))
+        using (var req = new HttpRequestMessage(HttpMethod.Post, $"{client.BaseAddress}{uploadId}?messaging_product=whatsapp"))
         {
             req.Content = new StreamContent(content);
             req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
@@ -256,7 +241,8 @@ public sealed class MetaUploadService : IMetaUploadService
 
         // FINISH
         var finPayload = new Dictionary<string, string> { ["finish"] = "true" };
-        using var finResp = await client.PostAsync($"{client.BaseAddress}{uploadId}", new FormUrlEncodedContent(finPayload), ct);
+        var finUrl = $"{client.BaseAddress}{uploadId}?messaging_product=whatsapp";
+        using var finResp = await client.PostAsync(finUrl, new FormUrlEncodedContent(finPayload), ct);
         var finText = await finResp.Content.ReadAsStringAsync(ct);
         
         if (!finResp.IsSuccessStatusCode)
@@ -309,7 +295,7 @@ public sealed class MetaUploadService : IMetaUploadService
 
         // TRANSFER
         var transferSep = sessionId.Contains('?') ? "&" : "?";
-        using (var req = new HttpRequestMessage(HttpMethod.Post, $"{client.BaseAddress}{sessionId}{transferSep}upload_phase=transfer"))
+        using (var req = new HttpRequestMessage(HttpMethod.Post, $"{client.BaseAddress}{sessionId}{transferSep}upload_phase=transfer&messaging_product=whatsapp"))
         {
             req.Content = new StreamContent(content);
             req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
@@ -327,10 +313,10 @@ public sealed class MetaUploadService : IMetaUploadService
 
         // FINISH
         var finishSep = sessionId.Contains('?') ? "&" : "?";
-        using (var req = new HttpRequestMessage(HttpMethod.Post, $"{client.BaseAddress}{sessionId}{finishSep}upload_phase=finish"))
+        var finishUrl = $"{client.BaseAddress}{sessionId}{finishSep}upload_phase=finish&messaging_product=whatsapp";
+        using (var req = new HttpRequestMessage(HttpMethod.Post, finishUrl))
         {
             req.Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["confirm"] = "true" });
-
             using var finishResp = await client.SendAsync(req, ct);
             var finishText = await finishResp.Content.ReadAsStringAsync(ct);
             
@@ -371,8 +357,8 @@ public sealed class MetaUploadService : IMetaUploadService
         if (json == null) return false;
 
         // Keys to check in order of preference
-        // Removed "id" because it's usually the session ID, not the asset handle.
-        var keys = new[] { "h", "handle", "asset_handle" };
+        // Added "id" because some Meta regions return the asset handle in the "id" field during Finish.
+        var keys = new[] { "h", "handle", "asset_handle", "id" };
 
         foreach (var key in keys)
         {
@@ -539,7 +525,11 @@ public sealed class MetaUploadService : IMetaUploadService
             };
 
         if (mediaType == HeaderMediaType.VIDEO)
-            return "video/mp4";
+            return ext switch
+            {
+                ".3gp" or ".3gpp" => "video/3gpp",
+                _ => "video/mp4"
+            };
 
         if (mediaType == HeaderMediaType.DOCUMENT)
             return ext switch

@@ -41,6 +41,22 @@ namespace xbytechat_api.WhatsAppSettings.Services
 
             var now = DateTime.UtcNow;
 
+            // 1. Check for duplicate WabaId across other businesses (if provided)
+            if (!string.IsNullOrWhiteSpace(dto.WabaId))
+            {
+                var cleanWaba = dto.WabaId.Trim();
+                var conflict = await _dbContext.WhatsAppSettings
+                    .AsNoTracking()
+                    .AnyAsync(x => x.BusinessId != dto.BusinessId && 
+                                   x.Provider == providerCanon && 
+                                   x.WabaId == cleanWaba);
+                
+                if (conflict)
+                {
+                    throw new InvalidOperationException($"The WABA ID '{cleanWaba}' is already associated with another account. Please verify your credentials.");
+                }
+            }
+
             await using var tx = await _dbContext.Database.BeginTransactionAsync();
 
             // Exact business + provider row
@@ -48,11 +64,11 @@ namespace xbytechat_api.WhatsAppSettings.Services
                 .FirstOrDefaultAsync(x => x.BusinessId == dto.BusinessId &&
                                           x.Provider.ToLower() == providerCanon.ToLower());
 
+            // Use existing casing if found to avoid Principal Key update (FK mismatch)
+            var effectiveProvider = existing?.Provider ?? providerCanon;
+
             if (existing != null)
             {
-                if (!string.Equals(existing.Provider, providerCanon, StringComparison.Ordinal))
-                    existing.Provider = providerCanon;
-
                 if (!string.IsNullOrWhiteSpace(dto.ApiUrl)) existing.ApiUrl = dto.ApiUrl.Trim();
                 if (!string.IsNullOrWhiteSpace(dto.ApiKey)) existing.ApiKey = dto.ApiKey.Trim();
                 if (!string.IsNullOrWhiteSpace(dto.WabaId)) existing.WabaId = dto.WabaId.Trim();
@@ -75,7 +91,7 @@ namespace xbytechat_api.WhatsAppSettings.Services
                 {
                     Id = Guid.NewGuid(),
                     BusinessId = dto.BusinessId,
-                    Provider = providerCanon,
+                    Provider = effectiveProvider,
                     ApiUrl = (dto.ApiUrl ?? string.Empty).Trim(),
                     ApiKey = (dto.ApiKey ?? string.Empty).Trim(),
                     SenderDisplayName = string.IsNullOrWhiteSpace(dto.SenderDisplayName) ? null : dto.SenderDisplayName.Trim(),
@@ -100,11 +116,11 @@ namespace xbytechat_api.WhatsAppSettings.Services
                 var display = string.IsNullOrWhiteSpace(dto.SenderDisplayName) ? null : dto.SenderDisplayName!.Trim();
 
                 // Upsert by business+provider+phoneId
-                var providerLc = providerCanon.ToLowerInvariant();
+                var providerFilter = effectiveProvider.ToLowerInvariant();
 
                 var numberRow = await _dbContext.WhatsAppPhoneNumbers.FirstOrDefaultAsync(x =>
                     x.BusinessId == dto.BusinessId &&
-                    x.Provider.ToLower() == providerLc &&
+                    x.Provider.ToLower() == providerFilter &&
                     x.PhoneNumberId == pnid);
 
                 if (numberRow == null)
@@ -113,7 +129,7 @@ namespace xbytechat_api.WhatsAppSettings.Services
                     {
                         Id = Guid.NewGuid(),
                         BusinessId = dto.BusinessId,
-                        Provider = providerCanon,
+                        Provider = effectiveProvider,
                         PhoneNumberId = pnid,
                         WhatsAppBusinessNumber = waNum,
                         SenderDisplayName = display,
@@ -127,6 +143,7 @@ namespace xbytechat_api.WhatsAppSettings.Services
                 {
                     numberRow.WhatsAppBusinessNumber = waNum;
                     numberRow.SenderDisplayName = display;
+                    numberRow.Provider = effectiveProvider; // ensure matches setting
                     numberRow.IsActive = true;
                     numberRow.IsDefault = true;
                     numberRow.UpdatedAt = now;
@@ -137,7 +154,7 @@ namespace xbytechat_api.WhatsAppSettings.Services
                 // Ensure single default per business+provider
                 await _dbContext.WhatsAppPhoneNumbers
                     .Where(x => x.BusinessId == dto.BusinessId &&
-                                x.Provider.ToLower() == providerLc &&
+                                x.Provider.ToLower() == providerFilter &&
                                 x.Id != numberRow.Id)
                     .ExecuteUpdateAsync(s => s.SetProperty(p => p.IsDefault, false));
             }

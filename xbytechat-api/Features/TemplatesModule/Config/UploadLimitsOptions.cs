@@ -3,11 +3,11 @@
 public sealed class UploadLimitsOptions
 {
     public long ImageMaxBytes { get; set; } = 10 * 1024 * 1024;    // 10 MB
-    public long VideoMaxBytes { get; set; } = 32 * 1024 * 1024;    // 32 MB
+    public long VideoMaxBytes { get; set; } = 16 * 1024 * 1024;    // 16 MB
     public long DocumentMaxBytes { get; set; } = 16 * 1024 * 1024; // 16 MB
 
     public string[] AllowedImageMime { get; set; } = new[] { "image/jpeg", "image/png", "image/webp" };
-    public string[] AllowedVideoMime { get; set; } = new[] { "video/mp4" };
+    public string[] AllowedVideoMime { get; set; } = new[] { "video/mp4", "video/3gpp" };
     public string[] AllowedDocMime { get; set; } = new[] { "application/pdf" };
 
     /// <summary>

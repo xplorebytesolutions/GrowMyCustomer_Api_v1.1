@@ -46,8 +46,20 @@ namespace xbytechat_api.WhatsAppSettings.Controllers
             try { businessId = User.GetBusinessId(); dto.BusinessId = businessId; }
             catch { return Unauthorized(new { message = "BusinessId missing or invalid in token." }); }
 
-            await _svc.SaveOrUpdateSettingAsync(dto);
-            return Ok(new { message = "Settings saved/updated." });
+            try
+            {
+                await _svc.SaveOrUpdateSettingAsync(dto);
+                return Ok(new { message = "Settings saved/updated." });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to update WhatsApp settings.");
+                return StatusCode(500, new { message = "An error occurred while saving settings.", details = ex.Message });
+            }
         }
 
         // ----------------------------

@@ -410,6 +410,11 @@ builder.Services.AddHttpClient("wa:meta_cloud", c =>
 {
     c.Timeout = TimeSpan.FromSeconds(20);
 });
+
+builder.Services.AddHttpClient("meta-graph", c =>
+{
+    c.Timeout = TimeSpan.FromMinutes(5);
+});
 builder.Services.AddScoped<MetaTemplateCatalogProvider>();
 builder.Services.AddScoped<PinnacleTemplateCatalogProvider>();
 builder.Services.AddScoped<ITemplateSyncService, TemplateSyncService>();
