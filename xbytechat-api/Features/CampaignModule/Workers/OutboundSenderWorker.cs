@@ -41,7 +41,7 @@ namespace xbytechat.api.Features.CampaignModule.Workers
         private readonly int _globalDop = 32;   // total parallel consumers
         private readonly int _perNumberDop = 8; // per (provider, PhoneNumberId)
 
-        private readonly TimeSpan _pollInterval = TimeSpan.FromMilliseconds(250);
+        private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(1);
         private static readonly TimeSpan _flightTimeout = TimeSpan.FromMinutes(5);
 
         private int _inChannel;
@@ -235,7 +235,7 @@ RETURNING j.*;";
                         continue;
                     }
 
-                    idleDelay = _pollInterval;
+                    // idleDelay = _pollInterval; // ❌ BAD: This was resetting the backoff every time!
 
                     var take = Math.Min(budget, 2000);
                     var flightSecs = (int)Math.Ceiling(_flightTimeout.TotalSeconds);
@@ -286,7 +286,7 @@ RETURNING j.*;";
                     else
                     {
                         consecutiveEmpty = 0;
-                        idleDelay = _pollInterval;
+                        idleDelay = _pollInterval; // ✅ Correct: Reset only when we found work
                     }
                 }
                 catch (TaskCanceledException)
