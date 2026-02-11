@@ -1,0 +1,13 @@
+{
+  "name": "xbytechat-api/Configuration",
+  "generatedAt": "2026-02-11 19:15:17 +00:00",
+  "files": [
+    {
+      "path": "xbytechat-api/Configuration/JwtSettings.cs",
+      "sha256": "4109fe340feebbd3a5c6b5092cefe36791eb45d9b52faaa2bfde8080d93c4740",
+      "language": "csharp",
+      "size": 325,
+      "content": "namespace xbytechat.api.Configuration\n{\n    public sealed class JwtSettings\n    {\n        public string Issuer { get; set; } = string.Empty;\n        public string Audience { get; set; } = string.Empty;\n        public string SecretKey { get; set; } = string.Empty;\n        public int ExpiryMinutes { get; set; } = 60;\n    }\n}\n"
+    }
+  ]
+}
