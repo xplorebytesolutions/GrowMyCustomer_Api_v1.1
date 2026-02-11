@@ -32,7 +32,47 @@ namespace xbytechat.api.Features.ESU.Facebook.Controllers
             _service = service;
             _status = status;
             _log = log;
-            _uiBase = (cfg["Ui:PublicBaseUrl"] ?? "http://localhost:3000/").TrimEnd('/');
+            _uiBase = (cfg["Ui:PublicBaseUrl"] ?? cfg["App:PublicBaseUrl"] ?? "http://localhost:3000/").TrimEnd('/');
+        }
+
+        private static string SanitizeReturnUrlOrDefault(string? returnUrl, string fallback)
+        {
+            if (string.IsNullOrWhiteSpace(returnUrl))
+                return fallback;
+
+            returnUrl = returnUrl.Trim();
+
+            if (!returnUrl.StartsWith("/", StringComparison.Ordinal) ||
+                returnUrl.StartsWith("//", StringComparison.Ordinal) ||
+                returnUrl.Contains("\\", StringComparison.Ordinal))
+            {
+                return fallback;
+            }
+
+            return returnUrl;
+        }
+
+        private static string? TryExtractReturnUrlFromState(string state)
+        {
+            // state format: {bizId:N}|{unixTs}|{randomHex}|{returnUrl}
+            // keep backward compatible: if parsing fails, return null.
+            var parts = state.Split('|', 4, StringSplitOptions.None);
+            if (parts.Length < 4) return null;
+
+            var returnUrl = parts[3];
+            return string.IsNullOrWhiteSpace(returnUrl) ? null : returnUrl;
+        }
+
+        private static string AppendParams(string path, string paramPairs)
+        {
+            if (string.IsNullOrWhiteSpace(paramPairs)) return path;
+
+            var cleaned = paramPairs.Trim();
+            cleaned = cleaned.TrimStart('?', '&');
+            if (cleaned.Length == 0) return path;
+
+            var sep = path.Contains("?", StringComparison.Ordinal) ? "&" : "?";
+            return $"{path}{sep}{cleaned}";
         }
 
         [HttpGet("health")]
@@ -125,7 +165,14 @@ namespace xbytechat.api.Features.ESU.Facebook.Controllers
             Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
             Response.Headers["Pragma"] = "no-cache";
 
-            string Target(string q) => $"{_uiBase}/app/welcomepage{q}";
+            var returnUrlFromState = !string.IsNullOrWhiteSpace(state)
+                ? TryExtractReturnUrlFromState(state)
+                : null;
+
+            var returnPath = SanitizeReturnUrlOrDefault(returnUrlFromState, "/app/welcomepage");
+
+            string Target(string paramPairs)
+                => $"{_uiBase}{AppendParams(returnPath, paramPairs)}";
 
             if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(state))
             {
@@ -134,7 +181,7 @@ namespace xbytechat.api.Features.ESU.Facebook.Controllers
                     string.IsNullOrWhiteSpace(code),
                     string.IsNullOrWhiteSpace(state));
 
-                return Redirect(Target("?esuStatus=failed&error=missing_code_or_state"));
+                return Redirect(Target("esuStatus=failed&error=missing_code_or_state"));
             }
 
             try
@@ -142,12 +189,12 @@ namespace xbytechat.api.Features.ESU.Facebook.Controllers
                 await _service.HandleCallbackAsync(code!, state!, ct);
                 _log.LogInformation("ESU callback success for state={State}", state);
 
-                return Redirect(Target("?esuStatus=success"));
+                return Redirect(Target("esuStatus=success"));
             }
             catch (Exception ex)
             {
                 _log.LogError(ex, "ESU callback failed for state={State}", state);
-                return Redirect(Target("?esuStatus=failed&error=oauth_exchange_failed"));
+                return Redirect(Target("esuStatus=failed&error=oauth_exchange_failed"));
             }
         }
         // -- Set two factor verification ---

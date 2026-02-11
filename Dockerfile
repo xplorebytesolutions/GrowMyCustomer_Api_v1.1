@@ -27,8 +27,8 @@ COPY --from=build /app/publish ./
 ENV TZ=Asia/Kolkata
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# Listen on port 80
-ENV ASPNETCORE_URLS=http://+:80
-EXPOSE 80
+# Listen on port 3298
+ENV ASPNETCORE_URLS=http://+:3298
+EXPOSE 3298
 
 ENTRYPOINT ["dotnet", "xbytechat.api.dll"]

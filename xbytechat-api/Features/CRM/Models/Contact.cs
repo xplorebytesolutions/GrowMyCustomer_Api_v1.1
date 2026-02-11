@@ -5,6 +5,20 @@ using xbytechat.api.Features.BusinessModule.Models;
 
 namespace xbytechat.api.Features.CRM.Models
 {
+    public enum ContactOptStatus
+    {
+        Unspecified = 0,
+        OptedIn = 1,
+        OptedOut = 2
+    }
+
+    public enum ContactChannelStatus
+    {
+        Valid = 0,
+        BlockedByUser = 1,
+        InvalidNumber = 2
+    }
+
     public class Contact
     {
         [Key]
@@ -16,11 +30,11 @@ namespace xbytechat.api.Features.CRM.Models
         // 🔗 FK to Business
         [Required]
         [MaxLength(100)]
-        public string Name { get; set; }
+        public string Name { get; set; } = null!;
 
         [Required]
         [MaxLength(20)]
-        public string PhoneNumber { get; set; }
+        public string PhoneNumber { get; set; } = null!;
 
         [MaxLength(100)]
         public string? Email { get; set; }
@@ -60,6 +74,21 @@ namespace xbytechat.api.Features.CRM.Models
 
         public DateTime? LastInboundAt { get; set; }   // UTC
         public DateTime? LastOutboundAt { get; set; }  // UTC
+
+        // Hard consent state used to gate outbound sends.
+        public ContactOptStatus OptStatus { get; set; } = ContactOptStatus.Unspecified;
+
+        // Channel delivery health state for this contact number.
+        public ContactChannelStatus ChannelStatus { get; set; } = ContactChannelStatus.Valid;
+
+        // UTC timestamp for the last change to OptStatus.
+        public DateTime? OptStatusUpdatedAt { get; set; }
+
+        // UTC timestamp for the last change to ChannelStatus.
+        public DateTime? ChannelStatusUpdatedAt { get; set; }
+
+        // Human-readable reason when contact is opted out.
+        public string? OptOutReason { get; set; }
 
         public bool IsFavorite { get; set; } = false;
         public bool IsArchived { get; set; } = false;

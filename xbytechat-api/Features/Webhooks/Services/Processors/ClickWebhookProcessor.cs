@@ -35,6 +35,21 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
         private readonly IFlowRuntimeService _flowRuntime;
         private readonly IContactProfileService _contactProfile;
         private readonly ICtaJourneyPublisher _journeyPublisher;
+        private static readonly HashSet<string> StopKeywords = new(StringComparer.Ordinal)
+        {
+            "STOP",
+            "UNSUBSCRIBE",
+            "CANCEL",
+            "END",
+            "STOPALL"
+        };
+
+        private static readonly HashSet<string> StartKeywords = new(StringComparer.Ordinal)
+        {
+            "START",
+            "UNSTOP",
+            "SUBSCRIBE"
+        };
         public ClickWebhookProcessor(
             ILogger<ClickWebhookProcessor> logger,
             IMessageIdResolver messageIdResolver,
@@ -90,6 +105,15 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                 static string NormalizePhone(string? raw)
                     => new string((raw ?? string.Empty).Where(char.IsDigit).ToArray());
 
+                static string NormalizeInboundPhone(string? raw)
+                {
+                    var digits = NormalizePhone(raw);
+                    if (string.IsNullOrWhiteSpace(digits)) return string.Empty;
+
+                    var normalized = PhoneNumberNormalizer.NormalizeToE164Digits("+" + digits, "IN");
+                    return !string.IsNullOrWhiteSpace(normalized) ? normalized : digits;
+                }
+
                 // contacts[0].profile.name (Meta shape)
                 static string? TryGetProfileName(JsonElement root)
                 {
@@ -140,6 +164,24 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                     if (!msg.TryGetProperty("type", out var typeProp))
                         continue;
 
+                    var nowUtc = DateTime.UtcNow;
+                    if (msg.TryGetProperty("timestamp", out var tsProp))
+                    {
+                        long unixSeconds = 0;
+                        if (tsProp.ValueKind == JsonValueKind.String)
+                        {
+                            var tsStr = tsProp.GetString();
+                            if (!string.IsNullOrWhiteSpace(tsStr))
+                                long.TryParse(tsStr, out unixSeconds);
+                        }
+                        else if (tsProp.ValueKind == JsonValueKind.Number)
+                        {
+                            tsProp.TryGetInt64(out unixSeconds);
+                        }
+                        if (unixSeconds > 0)
+                            nowUtc = DateTimeOffset.FromUnixTimeSeconds(unixSeconds).UtcDateTime;
+                    }
+
                     var type = typeProp.GetString();
 
                     string? clickMessageId = msg.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
@@ -148,7 +190,12 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                         : null;
 
                     var fromRaw = msg.TryGetProperty("from", out var fromProp) ? (fromProp.GetString() ?? "") : "";
-                    var fromDigits = NormalizePhone(fromRaw);
+                    var fromDigits = NormalizeInboundPhone(fromRaw);
+                    if (string.IsNullOrWhiteSpace(fromDigits))
+                    {
+                        _logger.LogWarning("⚠️ Click webhook skipped due to invalid sender phone. from={From}", fromRaw);
+                        continue;
+                    }
 
                     // ——— button label extraction
                     string? buttonText = null;
@@ -188,28 +235,35 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                         }
                     }
 
-                    if (string.IsNullOrWhiteSpace(buttonText) || string.IsNullOrWhiteSpace(originalMessageId))
+                    if (string.IsNullOrWhiteSpace(buttonText))
                     {
-                        _logger.LogDebug("ℹ️ Not a recognized click or missing context.id. type={Type}", type);
+                        _logger.LogDebug("ℹ️ Not a recognized click. type={Type}", type);
                         continue;
+                    }
+                    if (string.IsNullOrWhiteSpace(originalMessageId))
+                    {
+                        _logger.LogWarning("⚠️ Click received without context.id; using fallback business/contact resolution.");
                     }
 
                     _logger.LogInformation("🖱️ Button Click → From: {From}, ClickId: {ClickId}, OrigMsgId: {OrigId}, Text: {Text}",
                         fromDigits, clickMessageId, originalMessageId, buttonText);
 
-                    // —— Try 1: originating MessageLog (for flow-sent messages)
-                    var origin = await _context.MessageLogs
-                        .AsNoTracking()
-                        .FirstOrDefaultAsync(m =>
-                            m.MessageId == originalMessageId &&
-                            m.CTAFlowConfigId != null &&
-                            m.CTAFlowStepId != null);
+                    // —— Try 1/2: resolve flow context from original message ids when present
+                    var origin = !string.IsNullOrWhiteSpace(originalMessageId)
+                        ? await _context.MessageLogs
+                            .AsNoTracking()
+                            .FirstOrDefaultAsync(m =>
+                                m.MessageId == originalMessageId &&
+                                m.CTAFlowConfigId != null &&
+                                m.CTAFlowStepId != null)
+                        : null;
 
-                    Guid businessId;
-                    Guid flowId;
-                    Guid stepId;
+                    Guid businessId = Guid.Empty;
+                    Guid flowId = Guid.Empty;
+                    Guid stepId = Guid.Empty;
                     string? bundleJson = null;
                     int? flowVersion = null;
+                    var hasFlowContext = false;
 
                     Guid? campaignSendLogId = null; // link the click to the shown message
                     Guid? runId = null;             // copy from parent CSL when available
@@ -232,8 +286,9 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
 
                         campaignSendLogId = cslInfo?.Id;
                         runId = cslInfo?.RunId;
+                        hasFlowContext = true;
                     }
-                    else
+                    else if (!string.IsNullOrWhiteSpace(originalMessageId))
                     {
                         // —— Try 2: first campaign message (CampaignSendLogs)
                         var sendLog = await _context.CampaignSendLogs
@@ -244,82 +299,108 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                         if (sendLog == null)
                         {
                             _logger.LogWarning("❌ No MessageLog or CampaignSendLog for original WAMID {Orig}", originalMessageId);
-                            continue;
-                        }
-
-                        businessId = sendLog.BusinessId != Guid.Empty
-                            ? sendLog.BusinessId
-                            : (sendLog.Campaign?.BusinessId ?? Guid.Empty);
-
-                        if (businessId == Guid.Empty)
-                        {
-                            _logger.LogWarning("❌ Could not resolve BusinessId for WAMID {Orig}", originalMessageId);
-                            continue;
-                        }
-
-                        campaignSendLogId = sendLog.Id;
-                        runId = sendLog.RunId;
-
-                        if (sendLog.CTAFlowConfigId.HasValue && sendLog.CTAFlowStepId.HasValue)
-                        {
-                            flowId = sendLog.CTAFlowConfigId.Value;
-                            stepId = sendLog.CTAFlowStepId.Value;
-                        }
-                        else if (sendLog.Campaign?.CTAFlowConfigId != null)
-                        {
-                            flowId = sendLog.Campaign.CTAFlowConfigId.Value;
-
-                            var entry = await _context.CTAFlowSteps
-                                .Where(s => s.CTAFlowConfigId == flowId)
-                                .OrderBy(s => s.StepOrder)
-                                .Select(s => s.Id)
-                                .FirstOrDefaultAsync();
-
-                            if (entry == Guid.Empty)
-                            {
-                                _logger.LogWarning("❌ No entry step found for flow {Flow}", flowId);
-                                continue;
-                            }
-
-                            stepId = entry;
                         }
                         else
                         {
-                            _logger.LogWarning("❌ No flow context on CampaignSendLog for WAMID {Orig}", originalMessageId);
-                            continue;
-                        }
+                            businessId = sendLog.BusinessId != Guid.Empty
+                                ? sendLog.BusinessId
+                                : (sendLog.Campaign?.BusinessId ?? Guid.Empty);
 
-                        bundleJson = sendLog.ButtonBundleJson;
+                            if (businessId == Guid.Empty)
+                            {
+                                _logger.LogWarning("❌ Could not resolve BusinessId for WAMID {Orig}", originalMessageId);
+                            }
+                            else
+                            {
+                                campaignSendLogId = sendLog.Id;
+                                runId = sendLog.RunId;
+
+                                if (sendLog.CTAFlowConfigId.HasValue && sendLog.CTAFlowStepId.HasValue)
+                                {
+                                    flowId = sendLog.CTAFlowConfigId.Value;
+                                    stepId = sendLog.CTAFlowStepId.Value;
+                                    hasFlowContext = true;
+                                }
+                                else if (sendLog.Campaign?.CTAFlowConfigId != null)
+                                {
+                                    flowId = sendLog.Campaign.CTAFlowConfigId.Value;
+
+                                    var entry = await _context.CTAFlowSteps
+                                        .Where(s => s.CTAFlowConfigId == flowId)
+                                        .OrderBy(s => s.StepOrder)
+                                        .Select(s => s.Id)
+                                        .FirstOrDefaultAsync();
+
+                                    if (entry == Guid.Empty)
+                                    {
+                                        _logger.LogWarning("❌ No entry step found for flow {Flow}", flowId);
+                                    }
+                                    else
+                                    {
+                                        stepId = entry;
+                                        hasFlowContext = true;
+                                    }
+                                }
+                                else
+                                {
+                                    _logger.LogWarning("❌ No flow context on CampaignSendLog for WAMID {Orig}", originalMessageId);
+                                }
+
+                                bundleJson = sendLog.ButtonBundleJson;
+                            }
+                        }
+                    }
+
+                    // —— Try 3: fallback business resolution by webhook display phone number
+                    if (businessId == Guid.Empty && !string.IsNullOrWhiteSpace(botIdFromWebhook))
+                    {
+                        var phoneRows = await _context.WhatsAppPhoneNumbers
+                            .AsNoTracking()
+                            .Where(n => n.IsActive)
+                            .Select(n => new { n.BusinessId, n.WhatsAppBusinessNumber })
+                            .ToListAsync();
+
+                        var bizHit = phoneRows.FirstOrDefault(n =>
+                            NormalizePhone(n.WhatsAppBusinessNumber) == botIdFromWebhook);
+
+                        if (bizHit != null)
+                            businessId = bizHit.BusinessId;
+                    }
+
+                    if (businessId == Guid.Empty)
+                    {
+                        _logger.LogWarning("❌ Could not resolve BusinessId for click. context={Orig}, from={From}", originalMessageId, fromDigits);
+                        continue;
                     }
 
                     // ─────────────────────────────────────────────────────────────
                     // ✅ UPSERT PROFILE NAME (create-or-update) *before* next step
                     //    ensure we look up by digits-only phone.
                     // ─────────────────────────────────────────────────────────────
+                    Contact? trackedContact = null;
                     try
                     {
                         var profileName = TryGetProfileName(value);
                         if (!string.IsNullOrWhiteSpace(profileName))
                         {
-                            var now = DateTime.UtcNow;
-                            var contact = await _context.Contacts
+                            trackedContact = await _context.Contacts
                                 .FirstOrDefaultAsync(c => c.BusinessId == businessId &&
                                                           (c.PhoneNumber == fromDigits || c.PhoneNumber == fromRaw));
 
-                            if (contact == null)
+                            if (trackedContact == null)
                             {
                                 profileName = profileName ?? "User";
-                                contact = new Contact
+                                trackedContact = new Contact
                                 {
                                     Id = Guid.NewGuid(),
                                     BusinessId = businessId,
                                     PhoneNumber = fromDigits, // store canonical
                                     Name = profileName,
                                     ProfileName = profileName,
-                                    ProfileNameUpdatedAt = now,
-                                    CreatedAt = now,
+                                    ProfileNameUpdatedAt = nowUtc,
+                                    CreatedAt = nowUtc,
                                 };
-                                _context.Contacts.Add(contact);
+                                _context.Contacts.Add(trackedContact);
                                 await _context.SaveChangesAsync();
                                 _logger.LogInformation("👤 Created contact + stored WA profile '{Name}' for {Phone} (biz {Biz})",
                                     profileName, fromDigits, businessId);
@@ -328,27 +409,27 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                             {
                                 var changed = false;
 
-                                if (!string.Equals(contact.ProfileName, profileName, StringComparison.Ordinal))
+                                if (!string.Equals(trackedContact.ProfileName, profileName, StringComparison.Ordinal))
                                 {
-                                    contact.ProfileName = profileName;
-                                    contact.ProfileNameUpdatedAt = now;
+                                    trackedContact.ProfileName = profileName;
+                                    trackedContact.ProfileNameUpdatedAt = nowUtc;
                                     changed = true;
                                 }
 
-                                if (string.IsNullOrWhiteSpace(contact.Name) ||
-                                    contact.Name == "WhatsApp User" ||
-                                    contact.Name == contact.PhoneNumber)
+                                if (string.IsNullOrWhiteSpace(trackedContact.Name) ||
+                                    trackedContact.Name == "WhatsApp User" ||
+                                    trackedContact.Name == trackedContact.PhoneNumber)
                                 {
-                                    if (!string.Equals(contact.Name, profileName, StringComparison.Ordinal))
+                                    if (!string.Equals(trackedContact.Name, profileName, StringComparison.Ordinal))
                                     {
-                                        contact.Name = profileName;
+                                        trackedContact.Name = profileName;
                                         changed = true;
                                     }
                                 }
 
                                 if (changed)
                                 {
-                                    contact.ProfileNameUpdatedAt = now;
+                                    trackedContact.ProfileNameUpdatedAt = nowUtc;
                                     await _context.SaveChangesAsync();
                                     _logger.LogInformation("👤 Updated WA profile name to '{Name}' for {Phone} (biz {Biz})",
                                         profileName, fromDigits, businessId);
@@ -359,6 +440,75 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                     catch (Exception exProf)
                     {
                         _logger.LogWarning(exProf, "⚠️ Failed to upsert WA profile name on click webhook.");
+                    }
+
+                    if (trackedContact == null)
+                    {
+                        trackedContact = await _context.Contacts
+                            .FirstOrDefaultAsync(c => c.BusinessId == businessId &&
+                                                      (c.PhoneNumber == fromDigits || c.PhoneNumber == fromRaw));
+                    }
+
+                    if (trackedContact != null)
+                    {
+                        // Treat interactive click as inbound activity and reuse inbox reopen logic from InboundMessageProcessor.
+                        trackedContact.LastInboundAt = nowUtc;
+
+                        var inboxStatus = (trackedContact.InboxStatus ?? string.Empty).Trim();
+                        if (string.Equals(inboxStatus, "Closed", StringComparison.OrdinalIgnoreCase) ||
+                            trackedContact.IsArchived ||
+                            !trackedContact.IsActive)
+                        {
+                            trackedContact.InboxStatus = "Open";
+                            trackedContact.IsArchived = false;
+                            trackedContact.IsActive = true;
+                        }
+
+                        await _context.SaveChangesAsync();
+                    }
+                    else
+                    {
+                        _logger.LogWarning("⚠️ Contact not found for click activity update. biz={Biz} from={From}", businessId, fromDigits);
+                    }
+
+                    var complianceKeyword = NormalizeKeywordToken(buttonText);
+                    if (trackedContact != null && IsStopKeyword(complianceKeyword))
+                    {
+                        trackedContact.OptStatus = ContactOptStatus.OptedOut;
+                        trackedContact.OptStatusUpdatedAt = nowUtc;
+                        trackedContact.OptOutReason = "KeywordStop";
+                        await _context.SaveChangesAsync();
+
+                        _logger.LogInformation(
+                            "Compliance interceptor applied STOP on interactive click. biz={Biz} contactId={ContactId} phone={Phone}",
+                            businessId,
+                            trackedContact.Id,
+                            trackedContact.PhoneNumber);
+                        continue;
+                    }
+
+                    if (trackedContact != null && IsStartKeyword(complianceKeyword))
+                    {
+                        trackedContact.OptStatus = ContactOptStatus.OptedIn;
+                        trackedContact.OptStatusUpdatedAt = nowUtc;
+                        trackedContact.OptOutReason = null;
+                        await _context.SaveChangesAsync();
+
+                        _logger.LogInformation(
+                            "Compliance interceptor applied START on interactive click. biz={Biz} contactId={ContactId} phone={Phone}",
+                            businessId,
+                            trackedContact.Id,
+                            trackedContact.PhoneNumber);
+                        continue;
+                    }
+
+                    var isOptedOutContact = trackedContact?.OptStatus == ContactOptStatus.OptedOut;
+
+                    if (!hasFlowContext)
+                    {
+                        _logger.LogWarning("⚠️ Click context unresolved. Activity updated and flow execution skipped. biz={Biz} from={From} orig={Orig}",
+                            businessId, fromDigits, originalMessageId);
+                        continue;
                     }
 
                     // —— Map clicked text -> button index via the shown bundle
@@ -475,7 +625,7 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                             TemplateName = null,
                             TemplateType = "quick_reply",
                             Success = true,
-                            ExecutedAt = DateTime.UtcNow,
+                            ExecutedAt = nowUtc,
                             RequestId = Guid.NewGuid(),
                             RunId = runId
                         };
@@ -539,8 +689,8 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                                     JourneyText = buttonText ?? string.Empty,
                                     ClickCount = 1,
                                     LastButtonText = buttonText,
-                                    CreatedAt = DateTime.UtcNow,
-                                    UpdatedAt = DateTime.UtcNow
+                                    CreatedAt = nowUtc,
+                                    UpdatedAt = nowUtc
                                 };
                                 _context.ContactJourneyStates.Add(state);
                                 await _context.SaveChangesAsync();
@@ -565,7 +715,7 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                                 state.JourneyText = string.Join('/', parts);
                                 state.ClickCount += 1;
                                 state.LastButtonText = buttonText;
-                                state.UpdatedAt = DateTime.UtcNow;
+                                state.UpdatedAt = nowUtc;
 
                                 await _context.SaveChangesAsync();
                                 runningJourney = state.JourneyText ?? string.Empty;
@@ -672,6 +822,15 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                         _logger.LogWarning(ex, "⚠️ Failed to post CTAJourney (click). Continuing…");
                     }
                     // ===== end CTAJourney EMIT =====
+
+                    if (isOptedOutContact)
+                    {
+                        _logger.LogInformation(
+                            "Compliance: contact is opted out; click activity logged but flow execution skipped. biz={Biz} phone={Phone}",
+                            businessId,
+                            fromDigits);
+                        continue;
+                    }
 
                     // —— If terminal/URL button: already logged the click
                     if (link.NextStepId == null)
@@ -790,6 +949,22 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
             while (key.Contains("__")) key = key.Replace("__", "_");
             return key.Trim('_');
         }
+
+        private static string NormalizeKeywordToken(string? text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return string.Empty;
+
+            var firstToken = text.Trim()
+                .Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .FirstOrDefault() ?? string.Empty;
+
+            var trimmed = firstToken.Trim().Trim('.', ',', '!', '?', ';', ':', '"', '\'', '(', ')', '[', ']', '{', '}');
+            return trimmed.ToUpperInvariant();
+        }
+
+        private static bool IsStopKeyword(string normalizedText) => StopKeywords.Contains(normalizedText);
+
+        private static bool IsStartKeyword(string normalizedText) => StartKeywords.Contains(normalizedText);
 
     }
 }

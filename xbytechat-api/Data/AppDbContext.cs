@@ -173,7 +173,7 @@ namespace xbytechat.api
             {
                 Id = superAdminUserId,
                 Name = "Super Admin",
-                Email = "admin@xbytechat.com",
+                Email = "admin@xplorebyte.com",
                 RoleId = superadminRoleId,
                 Status = "active",
                 CreatedAt = seedCreatedAt,

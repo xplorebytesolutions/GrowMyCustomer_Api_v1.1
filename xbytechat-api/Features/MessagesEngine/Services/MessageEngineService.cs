@@ -168,6 +168,20 @@ namespace xbytechat.api.Features.MessagesEngine.Services
             if (string.IsNullOrWhiteSpace(provider) || (provider != "PINNACLE" && provider != "META_CLOUD"))
                 return ResponseResult.ErrorInfo("❌ Invalid provider.", "Provider must be exactly 'PINNACLE' or 'META_CLOUD'.");
 
+            var payloadRecipient = TryExtractRecipientFromPayload(payload);
+            if (string.IsNullOrWhiteSpace(payloadRecipient))
+            {
+                _logger.LogWarning(
+                    "Outbound consent guard could not be applied because payload recipient is missing. businessId={BusinessId}",
+                    businessId);
+            }
+            else
+            {
+                // Compliance guard must run before any outbound provider send call.
+                var consentBlock = await EnforceOutboundConsentGuardAsync(businessId, payloadRecipient);
+                if (consentBlock != null) return consentBlock;
+            }
+
             // If already-typed, keep your current JsonElement path:
             if (payload is MetaTemplateMessage m)
             {
@@ -335,6 +349,143 @@ namespace xbytechat.api.Features.MessagesEngine.Services
             return null;
         }
 
+        private static string NormalizeRecipientDigits(string? recipientNumber)
+        {
+            var raw = (recipientNumber ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(raw))
+                return string.Empty;
+
+            var normalized = PhoneNumberNormalizer.NormalizeToE164Digits(raw, "IN");
+            if (!string.IsNullOrWhiteSpace(normalized))
+                return normalized;
+
+            // Defensive fallback for legacy/loosely-formatted numbers.
+            var digits = new string(raw.Where(char.IsDigit).ToArray());
+            return digits.Length is >= 7 and <= 15 ? digits : string.Empty;
+        }
+
+        private static List<string> BuildRecipientLookupCandidates(string? recipientNumber)
+        {
+            var candidates = new HashSet<string>(StringComparer.Ordinal);
+            var raw = (recipientNumber ?? string.Empty).Trim();
+            var normalized = NormalizeRecipientDigits(raw);
+            var digitsOnly = new string(raw.Where(char.IsDigit).ToArray());
+
+            if (!string.IsNullOrWhiteSpace(normalized))
+            {
+                candidates.Add(normalized);
+                candidates.Add("+" + normalized);
+
+                // Legacy IN contacts may still exist as local 10-digit numbers.
+                if (normalized.Length == 12 && normalized.StartsWith("91", StringComparison.Ordinal))
+                    candidates.Add(normalized.Substring(2));
+            }
+
+            if (!string.IsNullOrWhiteSpace(digitsOnly))
+            {
+                candidates.Add(digitsOnly);
+                candidates.Add("+" + digitsOnly);
+
+                if (digitsOnly.Length == 10)
+                {
+                    candidates.Add("91" + digitsOnly);
+                    candidates.Add("+91" + digitsOnly);
+                }
+                else if (digitsOnly.Length == 12 && digitsOnly.StartsWith("91", StringComparison.Ordinal))
+                {
+                    candidates.Add(digitsOnly.Substring(2));
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(raw))
+                candidates.Add(raw);
+
+            return candidates.Where(c => !string.IsNullOrWhiteSpace(c)).ToList();
+        }
+
+        private static bool TryReadRecipientFromPayload(JsonElement root, out string? recipient)
+        {
+            recipient = null;
+            if (root.ValueKind != JsonValueKind.Object) return false;
+
+            if (root.TryGetProperty("to", out var toProp) && toProp.ValueKind == JsonValueKind.String)
+            {
+                recipient = toProp.GetString();
+                return !string.IsNullOrWhiteSpace(recipient);
+            }
+
+            if (root.TryGetProperty("To", out var toPascalProp) && toPascalProp.ValueKind == JsonValueKind.String)
+            {
+                recipient = toPascalProp.GetString();
+                return !string.IsNullOrWhiteSpace(recipient);
+            }
+
+            return false;
+        }
+
+        private static string? TryExtractRecipientFromPayload(object payload)
+        {
+            if (payload is JsonElement jsonElement)
+                return TryReadRecipientFromPayload(jsonElement, out var fromJsonElement) ? fromJsonElement : null;
+
+            try
+            {
+                using var payloadDoc = JsonDocument.Parse(JsonSerializer.Serialize(payload));
+                return TryReadRecipientFromPayload(payloadDoc.RootElement, out var fromPayloadObject) ? fromPayloadObject : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private async Task<ResponseResult?> EnforceOutboundConsentGuardAsync(Guid businessId, string? recipientNumber, CancellationToken ct = default)
+        {
+            var lookupCandidates = BuildRecipientLookupCandidates(recipientNumber);
+            var normalizedPhone = NormalizeRecipientDigits(recipientNumber);
+            if (lookupCandidates.Count == 0)
+                return null;
+
+            var contact = await _db.Contacts
+                .Where(c => c.BusinessId == businessId && lookupCandidates.Contains(c.PhoneNumber))
+                .OrderByDescending(c => c.OptStatus == ContactOptStatus.OptedOut)
+                .ThenByDescending(c => c.OptStatusUpdatedAt)
+                .FirstOrDefaultAsync(ct);
+
+            if (contact == null)
+            {
+                _logger.LogWarning(
+                    "Outbound consent guard could not be applied because contact was not found. businessId={BusinessId} phone={Phone}",
+                    businessId,
+                    normalizedPhone);
+                return null;
+            }
+
+            if (contact.OptStatus == ContactOptStatus.OptedOut)
+            {
+                _logger.LogInformation(
+                    "Outbound blocked by consent guard. businessId={BusinessId} phone={Phone} optStatus={OptStatus} channelStatus={ChannelStatus}",
+                    businessId,
+                    normalizedPhone,
+                    contact.OptStatus,
+                    contact.ChannelStatus);
+                return ResponseResult.ErrorInfo("CONTACT_OPTED_OUT");
+            }
+
+            if (contact.ChannelStatus != ContactChannelStatus.Valid)
+            {
+                _logger.LogInformation(
+                    "Outbound blocked by channel guard. businessId={BusinessId} phone={Phone} optStatus={OptStatus} channelStatus={ChannelStatus}",
+                    businessId,
+                    normalizedPhone,
+                    contact.OptStatus,
+                    contact.ChannelStatus);
+                return ResponseResult.ErrorInfo("CONTACT_CHANNEL_BLOCKED_OR_INVALID");
+            }
+
+            return null;
+        }
+
         // ---------- CSV-materialized variable helpers (for campaign recipients) ----------
         private static string[] ReadBodyParams(string? json)
         {
@@ -430,6 +581,9 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     return ResponseResult.ErrorInfo("❌ Invalid provider.",
                         "Provider must be exactly 'PINNACLE' or 'META_CLOUD'.");
                 }
+
+                var consentBlock = await EnforceOutboundConsentGuardAsync(dto.BusinessId, dto.RecipientNumber);
+                if (consentBlock != null) return consentBlock;
 
                 // Quota
                 var quotaCheck = await _planManager.CheckQuotaBeforeSendingAsync(dto.BusinessId);
@@ -754,6 +908,9 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 if (string.IsNullOrWhiteSpace(recipientDigits))
                     return ResponseResult.ErrorInfo("? Invalid recipient number.", $"Invalid/unsupported phone: '{recipientRaw}'");
 
+                var consentBlock = await EnforceOutboundConsentGuardAsync(businessId, recipientDigits);
+                if (consentBlock != null) return consentBlock;
+
                 // Canonical lookup: digits-only E.164 (no '+')
                 var contact = await _db.Contacts.FirstOrDefaultAsync(c =>
                     c.BusinessId == businessId &&
@@ -931,6 +1088,9 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 var recipientDigits = PhoneNumberNormalizer.NormalizeToE164Digits(recipientRaw, "IN");
                 if (string.IsNullOrWhiteSpace(recipientDigits))
                     return ResponseResult.ErrorInfo("? Invalid recipient number.", $"Invalid/unsupported phone: '{recipientRaw}'");
+
+                var consentBlock = await EnforceOutboundConsentGuardAsync(businessId, recipientDigits);
+                if (consentBlock != null) return consentBlock;
 
                 var mediaId = (dto.MediaId ?? string.Empty).Trim();
                 if (string.IsNullOrWhiteSpace(mediaId))
@@ -1153,6 +1313,9 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 if (string.IsNullOrWhiteSpace(recipientDigits))
                     return ResponseResult.ErrorInfo("? Invalid recipient number.", $"Invalid/unsupported phone: '{recipientRaw}'");
 
+                var consentBlock = await EnforceOutboundConsentGuardAsync(businessId, recipientDigits);
+                if (consentBlock != null) return consentBlock;
+
                 string? providerUpper = string.IsNullOrWhiteSpace(dto.Provider)
                     ? null
                     : dto.Provider!.Trim().ToUpperInvariant();
@@ -1330,6 +1493,9 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     return ResponseResult.ErrorInfo("❌ Invalid provider.",
                         "Provider must be exactly 'PINNACLE' or 'META_CLOUD'.");
                 }
+
+                var consentBlock = await EnforceOutboundConsentGuardAsync(businessId, dto.RecipientNumber);
+                if (consentBlock != null) return consentBlock;
 
                 Guid? contactId = null;
                 try
@@ -1892,6 +2058,9 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     return ResponseResult.ErrorInfo(
                         "❌ Missing PhoneNumberId for META_CLOUD. Configure a default sender or pass PhoneNumberId.");
 
+                var consentBlock = await EnforceOutboundConsentGuardAsync(businessId, dto.RecipientNumber);
+                if (consentBlock != null) return consentBlock;
+
                 // Build components (header + body + dynamic URL buttons)
                 var components = new List<object>();
 
@@ -2416,6 +2585,9 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                         "Provider must be exactly 'PINNACLE' or 'META_CLOUD'.");
                 }
 
+                var consentBlock = await EnforceOutboundConsentGuardAsync(dto.BusinessId, dto.RecipientNumber);
+                if (consentBlock != null) return consentBlock;
+
                 var validButtons = dto.CtaButtons?
                     .Where(b => !string.IsNullOrWhiteSpace(b.Title))
                     .Take(3)
@@ -2549,6 +2721,9 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     return ResponseResult.ErrorInfo("❌ Invalid provider.",
                         "Provider must be exactly 'PINNACLE' or 'META_CLOUD'.");
                 }
+
+                var consentBlock = await EnforceOutboundConsentGuardAsync(businessId, dto.RecipientNumber);
+                if (consentBlock != null) return consentBlock;
 
                 var components = new List<object>();
 

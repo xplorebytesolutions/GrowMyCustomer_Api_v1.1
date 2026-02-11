@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
@@ -11,16 +12,34 @@ using xbytechat.api;
 using xbytechat.api.Features.AutoReplyBuilder.Services;
 using xbytechat.api.Features.Automation.Services;
 using xbytechat.api.Features.CRM.Interfaces;
+using xbytechat.api.Features.CRM.Models;
 using xbytechat.api.Features.Inbox.DTOs;
 using xbytechat.api.Features.Inbox.Hubs;
 using xbytechat.api.Features.Inbox.Services;
 using xbytechat.api.Features.Webhooks.Directory;
 using xbytechat.api.Features.CRM.Services;
+using xbytechat.api.Helpers;
 
 namespace xbytechat.api.Features.Webhooks.Services.Processors
 {
     public class InboundMessageProcessor : IInboundMessageProcessor
     {
+        private static readonly HashSet<string> StopKeywords = new(StringComparer.Ordinal)
+        {
+            "STOP",
+            "UNSUBSCRIBE",
+            "CANCEL",
+            "END",
+            "STOPALL"
+        };
+
+        private static readonly HashSet<string> StartKeywords = new(StringComparer.Ordinal)
+        {
+            "START",
+            "UNSTOP",
+            "SUBSCRIBE"
+        };
+
         private readonly AppDbContext _context;
         private readonly IHubContext<InboxHub> _hubContext;
         private readonly ILogger<InboundMessageProcessor> _logger;
@@ -65,16 +84,33 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                 var contactProfileService = scope.ServiceProvider.GetRequiredService<IContactProfileService>();
                 var inboxService = scope.ServiceProvider.GetRequiredService<IInboxService>();
 
-                // digits-only normalizer (matches how we store/search phones)
-                static string Normalize(string? s) =>
+                // digits-only utility
+                static string NormalizeDigits(string? s) =>
                     string.IsNullOrWhiteSpace(s) ? "" : new string(s.Where(char.IsDigit).ToArray());
+
+                static string NormalizeInboundPhone(string? raw)
+                {
+                    var digits = NormalizeDigits(raw);
+                    if (string.IsNullOrWhiteSpace(digits)) return string.Empty;
+
+                    // WhatsApp webhook "from" is normally E.164 digits without '+'.
+                    // Add '+' before normalization to avoid region misinterpretation.
+                    var normalized = PhoneNumberNormalizer.NormalizeToE164Digits("+" + digits, "IN");
+                    return !string.IsNullOrWhiteSpace(normalized) ? normalized : digits;
+                }
 
                 var msgType = msg.TryGetProperty("type", out var typeProp)
                     ? typeProp.GetString()
                     : "unknown";
 
                 var rawContactPhone = msg.GetProperty("from").GetString() ?? "";
-                var contactPhone = Normalize(rawContactPhone);
+                var contactPhone = NormalizeInboundPhone(rawContactPhone);
+
+                if (string.IsNullOrWhiteSpace(contactPhone))
+                {
+                    logger.LogWarning("❌ Inbound: invalid sender phone format. from={From}", rawContactPhone);
+                    return;
+                }
 
                 // ✅ WAMID / Provider message id (used for idempotency)
                 var wamid = msg.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
@@ -100,6 +136,8 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                     if (unixSeconds > 0)
                         providerSentAtUtc = DateTimeOffset.FromUnixTimeSeconds(unixSeconds).UtcDateTime;
                 }
+
+                var inboundEventAtUtc = providerSentAtUtc == default ? DateTime.UtcNow : providerSentAtUtc;
 
                 string? content = msgType switch
                 {
@@ -234,7 +272,7 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                 // 2.2 Fallback to legacy WhatsAppPhoneNumbers by display number if needed
                 if (businessId == null && !string.IsNullOrWhiteSpace(displayNumber))
                 {
-                    var cleanIncomingBiz = Normalize(displayNumber);
+                    var cleanIncomingBiz = NormalizeDigits(displayNumber);
 
                     var candidates = await db.WhatsAppPhoneNumbers
                         .AsNoTracking()
@@ -243,7 +281,7 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                         .ToListAsync();
 
                     var numHit = candidates.FirstOrDefault(n =>
-                        Normalize(n.WhatsAppBusinessNumber) == cleanIncomingBiz);
+                        NormalizeDigits(n.WhatsAppBusinessNumber) == cleanIncomingBiz);
 
                     if (numHit != null)
                         businessId = numHit.BusinessId;
@@ -265,11 +303,60 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                 var resolvedBusinessId = businessId.Value;
 
                 // 3) Find or create contact
-                var contact = await contactService.FindOrCreateAsync(resolvedBusinessId, contactPhone);
-                if (contact == null)
+                var resolvedContact = await contactService.FindOrCreateAsync(resolvedBusinessId, contactPhone);
+                if (resolvedContact == null)
                 {
                     logger.LogWarning("❌ Could not resolve contact for phone: {Phone}", contactPhone);
                     return;
+                }
+
+                // Ensure updates are applied on an entity tracked by the same DbContext instance (db).
+                var contact = await db.Contacts.FirstOrDefaultAsync(c => c.Id == resolvedContact.Id);
+                if (contact == null)
+                {
+                    contact = await db.Contacts.FirstOrDefaultAsync(c =>
+                        c.BusinessId == resolvedBusinessId &&
+                        c.PhoneNumber == contactPhone);
+                }
+                if (contact == null)
+                {
+                    logger.LogWarning("❌ Tracked contact not found after resolve for phone: {Phone}", contactPhone);
+                    return;
+                }
+
+                var keywordToken = NormalizeKeywordToken(content);
+                var isStopKeyword = IsStopKeyword(keywordToken);
+                var isStartKeyword = IsStartKeyword(keywordToken);
+                var skipAutomationForCompliance = false;
+                var skipAutomationReason = string.Empty;
+                var complianceNowUtc = inboundEventAtUtc;
+
+                // Hard-coded compliance interceptor:
+                // STOP/START handling must run before any user-configured automation.
+                if (isStopKeyword)
+                {
+                    contact.OptStatus = ContactOptStatus.OptedOut;
+                    contact.OptStatusUpdatedAt = complianceNowUtc;
+                    contact.OptOutReason = "KeywordStop";
+                    skipAutomationForCompliance = true;
+                    skipAutomationReason = "STOP keyword";
+                }
+                else if (isStartKeyword)
+                {
+                    contact.OptStatus = ContactOptStatus.OptedIn;
+                    contact.OptStatusUpdatedAt = complianceNowUtc;
+                    contact.OptOutReason = null;
+
+                    // Safe default: do not run automation for START messages.
+                    skipAutomationForCompliance = true;
+                    skipAutomationReason = "START keyword";
+                }
+                else if (contact.OptStatus == ContactOptStatus.OptedOut)
+                {
+                    // Contact is opted out: keep recording inbound and inbox updates,
+                    // but block automation to avoid compliance violations/bot loops.
+                    skipAutomationForCompliance = true;
+                    skipAutomationReason = "contact is opted out";
                 }
 
                 static string? TryGetProfileName(JsonElement root)
@@ -315,7 +402,7 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                 // 5) Update conversation timestamps + auto-reopen on inbound (best-effort)
                 try
                 {
-                    contact.LastInboundAt = providerSentAtUtc;
+                    contact.LastInboundAt = inboundEventAtUtc;
 
                     var inboxStatus = (contact.InboxStatus ?? string.Empty).Trim();
                     if (string.Equals(inboxStatus, "Closed", StringComparison.OrdinalIgnoreCase) ||
@@ -392,65 +479,78 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                     });
 
                 // 6) Try AutoReply runtime first, then fall back to legacy automation
-                try
+                if (skipAutomationForCompliance)
                 {
-                    var triggerRaw = (content ?? string.Empty).Trim();
-                    var triggerKeyword = triggerRaw.ToLowerInvariant();
-
-                    var autoHandled = false;
-
-                    if (!string.IsNullOrWhiteSpace(triggerRaw))
+                    logger.LogInformation(
+                        "Compliance interceptor skipped automation. BusinessId={BusinessId}, ContactId={ContactId}, Reason={Reason}, Keyword={Keyword}",
+                        resolvedBusinessId,
+                        contact.Id,
+                        skipAutomationReason,
+                        keywordToken
+                    );
+                }
+                else
+                {
+                    try
                     {
-                        var autoResult = await autoReplyRuntime.TryHandleAsync(
-                            resolvedBusinessId,
-                            contact.Id,
-                            contact.PhoneNumber,
-                            triggerRaw,
-                            CancellationToken.None
-                        );
+                        var triggerRaw = (content ?? string.Empty).Trim();
+                        var triggerKeyword = triggerRaw.ToLowerInvariant();
 
-                        autoHandled = autoResult.Handled;
+                        var autoHandled = false;
 
-                        if (autoResult.Handled)
+                        if (!string.IsNullOrWhiteSpace(triggerRaw))
                         {
-                            logger.LogInformation(
-                                "🤖 AutoReply runtime handled inbound message. BusinessId={BusinessId}, ContactId={ContactId}, Keyword={Keyword}, SentSimpleReply={SentSimpleReply}, StartedCtaFlow={StartedCtaFlow}, AutoReplyFlowId={FlowId}, CtaFlowConfigId={CtaId}",
+                            var autoResult = await autoReplyRuntime.TryHandleAsync(
                                 resolvedBusinessId,
                                 contact.Id,
+                                contact.PhoneNumber,
+                                triggerRaw,
+                                CancellationToken.None
+                            );
+
+                            autoHandled = autoResult.Handled;
+
+                            if (autoResult.Handled)
+                            {
+                                logger.LogInformation(
+                                    "🤖 AutoReply runtime handled inbound message. BusinessId={BusinessId}, ContactId={ContactId}, Keyword={Keyword}, SentSimpleReply={SentSimpleReply}, StartedCtaFlow={StartedCtaFlow}, AutoReplyFlowId={FlowId}, CtaFlowConfigId={CtaId}",
+                                    resolvedBusinessId,
+                                    contact.Id,
+                                    triggerKeyword,
+                                    autoResult.SentSimpleReply,
+                                    autoResult.StartedCtaFlow,
+                                    autoResult.AutoReplyFlowId,
+                                    autoResult.CtaFlowConfigId
+                                );
+                            }
+                            else
+                            {
+                                logger.LogInformation(
+                                    "🤖 AutoReply runtime did not handle message. Falling back to legacy automation. Keyword={Keyword}",
+                                    triggerKeyword
+                                );
+                            }
+                        }
+
+                        if (!autoHandled)
+                        {
+                            var handledByLegacy = await automationService.TryRunFlowByKeywordAsync(
+                                resolvedBusinessId,
                                 triggerKeyword,
-                                autoResult.SentSimpleReply,
-                                autoResult.StartedCtaFlow,
-                                autoResult.AutoReplyFlowId,
-                                autoResult.CtaFlowConfigId
-                            );
-                        }
-                        else
-                        {
-                            logger.LogInformation(
-                                "🤖 AutoReply runtime did not handle message. Falling back to legacy automation. Keyword={Keyword}",
-                                triggerKeyword
-                            );
+                                contact.PhoneNumber,
+                                sourceChannel: "whatsapp",
+                                industryTag: "default");
+
+                            if (!handledByLegacy)
+                            {
+                                logger.LogInformation("🕵️ No automation flow matched keyword (legacy): {Keyword}", triggerKeyword);
+                            }
                         }
                     }
-
-                    if (!autoHandled)
+                    catch (Exception ex)
                     {
-                        var handledByLegacy = await automationService.TryRunFlowByKeywordAsync(
-                            resolvedBusinessId,
-                            triggerKeyword,
-                            contact.PhoneNumber,
-                            sourceChannel: "whatsapp",
-                            industryTag: "default");
-
-                        if (!handledByLegacy)
-                        {
-                            logger.LogInformation("🕵️ No automation flow matched keyword (legacy): {Keyword}", triggerKeyword);
-                        }
+                        logger.LogError(ex, "❌ AutoReply / Automation flow execution failed.");
                     }
-                }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex, "❌ AutoReply / Automation flow execution failed.");
                 }
 
                 logger.LogInformation(
@@ -465,6 +565,28 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
             {
                 _logger.LogError(ex, "❌ Failed to process inbound WhatsApp chat.");
             }
+        }
+
+        private static bool IsStopKeyword(string normalizedText)
+        {
+            return StopKeywords.Contains(normalizedText);
+        }
+
+        private static bool IsStartKeyword(string normalizedText)
+        {
+            return StartKeywords.Contains(normalizedText);
+        }
+
+        private static string NormalizeKeywordToken(string? text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return string.Empty;
+
+            var firstToken = text.Trim()
+                .Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .FirstOrDefault() ?? string.Empty;
+
+            var trimmed = firstToken.Trim().Trim('.', ',', '!', '?', ';', ':', '"', '\'', '(', ')', '[', ']', '{', '}');
+            return trimmed.ToUpperInvariant();
         }
 
         public async Task ProcessInteractiveAsync(JsonElement value, CancellationToken ct = default)

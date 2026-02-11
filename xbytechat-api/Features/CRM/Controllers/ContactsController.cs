@@ -2,7 +2,10 @@
 
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting;
 using xbytechat.api.Features.CampaignModule.DTOs;
+using xbytechat.api.Features.CRM.Models;
 using xbytechat.api.Helpers;
 using xbytechat.api.Shared;
 using xbytechat.api.Features.CRM.Dtos;
@@ -17,15 +20,21 @@ namespace xbytechat.api.Features.CRM.Controllers
     {
         private readonly IContactService _contactService;
         private readonly IContactTagService _contactTagService;
+        private readonly AppDbContext _db;
+        private readonly IHostEnvironment _env;
         private readonly ILogger<ContactsController> _logger;
 
         public ContactsController(
             IContactService contactService,
             IContactTagService contactTagService,
+            AppDbContext db,
+            IHostEnvironment env,
             ILogger<ContactsController> logger)
         {
             _contactService = contactService;
             _contactTagService = contactTagService;
+            _db = db;
+            _env = env;
             _logger = logger;
         }
 
@@ -270,6 +279,140 @@ namespace xbytechat.api.Features.CRM.Controllers
             var contacts = await _contactService.GetContactsByTagsAsync(businessId, tagIds);
 
             return Ok(ResponseResult.SuccessInfo("Contacts filtered successfully.", contacts));
+        }
+
+        // GET: api/contacts/debug/opt-status?phone=9198...
+        [ApiExplorerSettings(IgnoreApi = true)]
+        [HttpGet("debug/opt-status")]
+        public async Task<IActionResult> GetOptStatusDebug([FromQuery] string phone)
+        {
+            if (string.IsNullOrWhiteSpace(phone))
+                return BadRequest(ResponseResult.ErrorInfo("Phone is required."));
+
+            var businessId = HttpContext.User.GetBusinessId();
+            var candidates = BuildPhoneLookupCandidates(phone);
+            if (candidates.Count == 0)
+                return BadRequest(ResponseResult.ErrorInfo("Phone format is invalid."));
+
+            var contact = await _db.Contacts
+                .AsNoTracking()
+                .Where(c => c.BusinessId == businessId && candidates.Contains(c.PhoneNumber))
+                .OrderByDescending(c => c.OptStatus == ContactOptStatus.OptedOut)
+                .ThenByDescending(c => c.OptStatusUpdatedAt)
+                .FirstOrDefaultAsync();
+
+            if (contact == null)
+            {
+                return NotFound(ResponseResult.ErrorInfo("Contact not found for provided phone."));
+            }
+
+            return Ok(ResponseResult.SuccessInfo("Opt status resolved.", new
+            {
+                contactId = contact.Id,
+                phoneNumber = contact.PhoneNumber,
+                optStatus = contact.OptStatus.ToString(),
+                channelStatus = contact.ChannelStatus.ToString(),
+                optOutReason = contact.OptOutReason,
+                optStatusUpdatedAt = contact.OptStatusUpdatedAt,
+                channelStatusUpdatedAt = contact.ChannelStatusUpdatedAt
+            }));
+        }
+
+        // POST: api/contacts/debug/force-opt-in?phone=9198...&resetChannel=true
+        [ApiExplorerSettings(IgnoreApi = true)]
+        [HttpPost("debug/force-opt-in")]
+        public async Task<IActionResult> ForceOptInDebug([FromQuery] string phone, [FromQuery] bool resetChannel = false)
+        {
+            if (_env.IsProduction())
+                return StatusCode(403, ResponseResult.ErrorInfo("Debug endpoint is disabled in production."));
+
+            if (string.IsNullOrWhiteSpace(phone))
+                return BadRequest(ResponseResult.ErrorInfo("Phone is required."));
+
+            var businessId = HttpContext.User.GetBusinessId();
+            var candidates = BuildPhoneLookupCandidates(phone);
+            if (candidates.Count == 0)
+                return BadRequest(ResponseResult.ErrorInfo("Phone format is invalid."));
+
+            var contact = await _db.Contacts
+                .Where(c => c.BusinessId == businessId && candidates.Contains(c.PhoneNumber))
+                .OrderByDescending(c => c.OptStatus == ContactOptStatus.OptedOut)
+                .ThenByDescending(c => c.OptStatusUpdatedAt)
+                .FirstOrDefaultAsync();
+
+            if (contact == null)
+                return NotFound(ResponseResult.ErrorInfo("Contact not found for provided phone."));
+
+            var nowUtc = DateTime.UtcNow;
+            contact.OptStatus = ContactOptStatus.OptedIn;
+            contact.OptStatusUpdatedAt = nowUtc;
+            contact.OptOutReason = null;
+
+            if (resetChannel)
+            {
+                contact.ChannelStatus = ContactChannelStatus.Valid;
+                contact.ChannelStatusUpdatedAt = nowUtc;
+            }
+
+            await _db.SaveChangesAsync();
+
+            _logger.LogWarning(
+                "Debug force-opt-in applied. businessId={BusinessId} contactId={ContactId} phone={Phone} resetChannel={ResetChannel}",
+                businessId,
+                contact.Id,
+                contact.PhoneNumber,
+                resetChannel);
+
+            return Ok(ResponseResult.SuccessInfo("Contact force opt-in applied.", new
+            {
+                contactId = contact.Id,
+                phoneNumber = contact.PhoneNumber,
+                optStatus = contact.OptStatus.ToString(),
+                channelStatus = contact.ChannelStatus.ToString(),
+                optOutReason = contact.OptOutReason,
+                optStatusUpdatedAt = contact.OptStatusUpdatedAt,
+                channelStatusUpdatedAt = contact.ChannelStatusUpdatedAt,
+                resetChannel
+            }));
+        }
+
+        private static List<string> BuildPhoneLookupCandidates(string? raw)
+        {
+            var value = (raw ?? string.Empty).Trim();
+            var list = new HashSet<string>(StringComparer.Ordinal);
+
+            var normalized = PhoneNumberNormalizer.NormalizeToE164Digits(value, "IN");
+            var digits = new string(value.Where(char.IsDigit).ToArray());
+
+            if (!string.IsNullOrWhiteSpace(normalized))
+            {
+                list.Add(normalized);
+                list.Add("+" + normalized);
+
+                if (normalized.Length == 12 && normalized.StartsWith("91", StringComparison.Ordinal))
+                    list.Add(normalized.Substring(2));
+            }
+
+            if (!string.IsNullOrWhiteSpace(digits))
+            {
+                list.Add(digits);
+                list.Add("+" + digits);
+
+                if (digits.Length == 10)
+                {
+                    list.Add("91" + digits);
+                    list.Add("+91" + digits);
+                }
+                else if (digits.Length == 12 && digits.StartsWith("91", StringComparison.Ordinal))
+                {
+                    list.Add(digits.Substring(2));
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(value))
+                list.Add(value);
+
+            return list.Where(x => !string.IsNullOrWhiteSpace(x)).ToList();
         }
     }
 }

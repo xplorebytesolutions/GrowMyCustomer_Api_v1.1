@@ -34,8 +34,7 @@ namespace xbytechat.api.Features.CRM.Services
                 if (string.IsNullOrWhiteSpace(normalizedPhone))
                     return ResponseResult.ErrorInfo("❌ Phone number is invalid. Please enter a valid number.");
 
-                var existingContact = await _db.Contacts.FirstOrDefaultAsync(c =>
-                    c.BusinessId == businessId && c.PhoneNumber == normalizedPhone);
+                var existingContact = await FindContactByPhoneAsync(businessId, normalizedPhone);
 
                 if (existingContact != null)
                 {
@@ -150,10 +149,11 @@ namespace xbytechat.api.Features.CRM.Services
             if (string.IsNullOrWhiteSpace(normalizedPhone))
                 throw new ArgumentException("Invalid phone number. Use E.164 digits-only (country code + number).");
 
-            var phoneExists = await _db.Contacts.AnyAsync(c =>
+            var lookupCandidates = BuildPhoneLookupCandidates(normalizedPhone);
+            var phoneExists = lookupCandidates.Count > 0 && await _db.Contacts.AnyAsync(c =>
                 c.BusinessId == businessId &&
                 c.Id != dto.Id &&
-                c.PhoneNumber == normalizedPhone);
+                lookupCandidates.Contains(c.PhoneNumber));
 
             if (phoneExists)
                 throw new ArgumentException("A contact with this phone number already exists.");
@@ -248,21 +248,109 @@ namespace xbytechat.api.Features.CRM.Services
             return result;
         }
 
-        private string NormalizePhone(string phoneNumber)
+        private static string NormalizePhone(string phoneNumber)
         {
-            var normalized = PhoneNumberNormalizer.NormalizeToE164Digits(phoneNumber, "IN");
-            return normalized ?? string.Empty; // canonical: E.164 digits-only (no '+')
+            var raw = (phoneNumber ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(raw))
+                return string.Empty;
+
+            // First pass: normal parser behavior (local + international supported).
+            var normalized = PhoneNumberNormalizer.NormalizeToE164Digits(raw, "IN");
+            if (!string.IsNullOrWhiteSpace(normalized))
+                return normalized;
+
+            // Second pass: webhook and provider payloads often send E.164 digits without '+'.
+            var digits = new string(raw.Where(char.IsDigit).ToArray());
+            if (string.IsNullOrWhiteSpace(digits))
+                return string.Empty;
+
+            normalized = PhoneNumberNormalizer.NormalizeToE164Digits("+" + digits, "IN");
+            if (!string.IsNullOrWhiteSpace(normalized))
+                return normalized;
+
+            // Do not store ambiguous values; force parseable canonical format.
+            return string.Empty;
+        }
+
+        private static List<string> BuildPhoneLookupCandidates(string phoneNumber)
+        {
+            var raw = (phoneNumber ?? string.Empty).Trim();
+            var candidates = new HashSet<string>(StringComparer.Ordinal);
+            var normalized = NormalizePhone(raw);
+            var digitsOnly = new string(raw.Where(char.IsDigit).ToArray());
+
+            if (!string.IsNullOrWhiteSpace(normalized))
+            {
+                candidates.Add(normalized);
+                candidates.Add("+" + normalized);
+
+                // Legacy IN rows may have been stored as 10-digit local numbers.
+                if (normalized.Length == 12 && normalized.StartsWith("91", StringComparison.Ordinal))
+                    candidates.Add(normalized.Substring(2));
+            }
+
+            if (!string.IsNullOrWhiteSpace(digitsOnly))
+            {
+                candidates.Add(digitsOnly);
+                candidates.Add("+" + digitsOnly);
+
+                if (digitsOnly.Length == 10)
+                {
+                    candidates.Add("91" + digitsOnly);
+                    candidates.Add("+91" + digitsOnly);
+                }
+                else if (digitsOnly.Length == 12 && digitsOnly.StartsWith("91", StringComparison.Ordinal))
+                {
+                    candidates.Add(digitsOnly.Substring(2));
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(raw))
+                candidates.Add(raw);
+
+            return candidates.Where(x => !string.IsNullOrWhiteSpace(x)).ToList();
+        }
+
+        private async Task<Contact?> FindContactByPhoneAsync(Guid businessId, string phoneNumber)
+        {
+            var lookupCandidates = BuildPhoneLookupCandidates(phoneNumber);
+            if (lookupCandidates.Count == 0)
+                return null;
+
+            return await _db.Contacts
+                .Where(c => c.BusinessId == businessId && lookupCandidates.Contains(c.PhoneNumber))
+                .OrderByDescending(c => c.IsActive)
+                .ThenByDescending(c => c.CreatedAt)
+                .FirstOrDefaultAsync();
         }
 
         public async Task<Contact> FindOrCreateAsync(Guid businessId, string phoneNumber)
         {
             var normalized = NormalizePhone(phoneNumber);
+            if (string.IsNullOrWhiteSpace(normalized))
+                throw new ArgumentException("Invalid phone number format.", nameof(phoneNumber));
 
-            var contact = await _db.Contacts
-                .FirstOrDefaultAsync(c => c.BusinessId == businessId && c.PhoneNumber == normalized);
+            var contact = await FindContactByPhoneAsync(businessId, normalized);
 
             if (contact != null)
+            {
+                // Opportunistically backfill legacy rows to canonical digits-only storage.
+                if (!string.Equals(contact.PhoneNumber, normalized, StringComparison.Ordinal))
+                {
+                    var canonicalAlreadyExists = await _db.Contacts.AnyAsync(c =>
+                        c.BusinessId == businessId &&
+                        c.Id != contact.Id &&
+                        c.PhoneNumber == normalized);
+
+                    if (!canonicalAlreadyExists)
+                    {
+                        contact.PhoneNumber = normalized;
+                        await _db.SaveChangesAsync();
+                    }
+                }
+
                 return contact;
+            }
 
             var newContact = new Contact
             {
@@ -478,8 +566,15 @@ namespace xbytechat.api.Features.CRM.Services
             if (tags == null || tags.Count == 0)
                 return false;
 
+            var lookupCandidates = BuildPhoneLookupCandidates(normalizedPhone);
+            if (lookupCandidates.Count == 0)
+                return false;
+
             var contact = await _db.Contacts
-                .FirstOrDefaultAsync(c => c.BusinessId == businessId && c.PhoneNumber == phoneNumber && !c.IsArchived);
+                .FirstOrDefaultAsync(c =>
+                    c.BusinessId == businessId &&
+                    !c.IsArchived &&
+                    lookupCandidates.Contains(c.PhoneNumber));
 
             if (contact == null)
                 return false;
