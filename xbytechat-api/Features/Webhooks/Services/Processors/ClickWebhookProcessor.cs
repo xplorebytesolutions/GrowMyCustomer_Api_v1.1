@@ -1,5 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using System;
 using System.IO.Pipelines;
 using System.Text.Json;
@@ -13,6 +14,7 @@ using xbytechat.api.Features.CTAFlowBuilder.Models;
 using xbytechat.api.Features.CTAFlowBuilder.Services;
 using xbytechat.api.Features.CustomeApi.Models;
 using xbytechat.api.Features.CustomeApi.Services;
+using xbytechat.api.Features.Inbox.Models;
 using xbytechat.api.Features.MessagesEngine.DTOs;
 using xbytechat.api.Features.MessagesEngine.Services;
 using xbytechat.api.Features.Tracking.DTOs;
@@ -100,6 +102,11 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                                  .Trim()
                                  .ToLowerInvariant();
                 }
+                static bool IsTalkToTeamHandoff(string? s)
+                {
+                    var normalized = Norm(s);
+                    return normalized == "talk to team" || normalized == "talk_to_team";
+                }
 
                 // canonical phone: keep only digits (matches how we store & search contacts)
                 static string NormalizePhone(string? raw)
@@ -185,6 +192,7 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                     var type = typeProp.GetString();
 
                     string? clickMessageId = msg.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+                    clickMessageId = string.IsNullOrWhiteSpace(clickMessageId) ? null : clickMessageId.Trim();
                     string? originalMessageId = msg.TryGetProperty("context", out var ctx) && ctx.TryGetProperty("id", out var ctxId)
                         ? ctxId.GetString()
                         : null;
@@ -373,6 +381,20 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                         continue;
                     }
 
+                    var providerEventId = clickMessageId;
+                    if (!string.IsNullOrWhiteSpace(providerEventId))
+                    {
+                        var alreadyProcessed = await _context.FlowExecutionLogs
+                            .AsNoTracking()
+                            .AnyAsync(x => x.BusinessId == businessId && x.ProviderEventId == providerEventId);
+
+                        if (alreadyProcessed)
+                        {
+                            _logger.LogInformation("↩️ Duplicate click webhook ignored. businessId={BusinessId}, providerEventId={ProviderEventId}", businessId, providerEventId);
+                            continue;
+                        }
+                    }
+
                     // ─────────────────────────────────────────────────────────────
                     // ✅ UPSERT PROFILE NAME (create-or-update) *before* next step
                     //    ensure we look up by digits-only phone.
@@ -453,6 +475,7 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                     {
                         // Treat interactive click as inbound activity and reuse inbox reopen logic from InboundMessageProcessor.
                         trackedContact.LastInboundAt = nowUtc;
+                        var shouldHandoffToAgent = IsTalkToTeamHandoff(buttonText);
 
                         var inboxStatus = (trackedContact.InboxStatus ?? string.Empty).Trim();
                         if (string.Equals(inboxStatus, "Closed", StringComparison.OrdinalIgnoreCase) ||
@@ -464,7 +487,46 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                             trackedContact.IsActive = true;
                         }
 
+                        if (shouldHandoffToAgent)
+                        {
+                            trackedContact.InboxStatus = "Pending";
+                            trackedContact.IsAutomationPaused = true;
+                            trackedContact.IsArchived = false;
+                            trackedContact.IsActive = true;
+
+                            var session = await _context.ChatSessionStates
+                                .FirstOrDefaultAsync(s => s.BusinessId == businessId && s.ContactId == trackedContact.Id);
+
+                            if (session == null)
+                            {
+                                _context.ChatSessionStates.Add(new ChatSessionState
+                                {
+                                    Id = Guid.NewGuid(),
+                                    BusinessId = businessId,
+                                    ContactId = trackedContact.Id,
+                                    Mode = ChatSessionState.ModeAgent,
+                                    LastUpdatedAt = nowUtc,
+                                    UpdatedBy = "cta-talk-to-team"
+                                });
+                            }
+                            else
+                            {
+                                session.Mode = ChatSessionState.ModeAgent;
+                                session.LastUpdatedAt = nowUtc;
+                                session.UpdatedBy = "cta-talk-to-team";
+                            }
+                        }
+
                         await _context.SaveChangesAsync();
+
+                        if (shouldHandoffToAgent)
+                        {
+                            _logger.LogInformation(
+                                "🤝 Talk-to-team handoff applied. biz={Biz} contactId={ContactId} phone={Phone}",
+                                businessId,
+                                trackedContact.Id,
+                                trackedContact.PhoneNumber);
+                        }
                     }
                     else
                     {
@@ -627,11 +689,20 @@ namespace xbytechat.api.Features.Webhooks.Services.Processors
                             Success = true,
                             ExecutedAt = nowUtc,
                             RequestId = Guid.NewGuid(),
+                            ProviderEventId = providerEventId,
                             RunId = runId
                         };
 
                         _context.FlowExecutionLogs.Add(clickExec);
                         await _context.SaveChangesAsync();
+                    }
+                    catch (DbUpdateException exSave) when (
+                        exSave.InnerException is PostgresException pg &&
+                        pg.SqlState == PostgresErrorCodes.UniqueViolation)
+                    {
+                        _logger.LogInformation("↩️ Duplicate click webhook ignored at DB guard. businessId={BusinessId}, providerEventId={ProviderEventId}",
+                            businessId, providerEventId);
+                        continue;
                     }
                     catch (Exception exSave)
                     {

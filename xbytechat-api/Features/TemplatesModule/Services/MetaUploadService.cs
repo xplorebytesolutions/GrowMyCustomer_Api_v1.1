@@ -137,59 +137,49 @@ public sealed class MetaUploadService : IMetaUploadService
              c.WabaId, mediaType, mime, size);
 
 
-        // Path C: Classic (Numeric ID) - PROMOTED to Primary for Template compatibility
-        // Returns a numeric Media ID (e.g. "12345...") which is strictly required by the Cloud API for template headers.
-        try 
-        {
-             var targetId = !string.IsNullOrWhiteSpace(c.PhoneNumberId) ? c.PhoneNumberId : c.WabaId;
-             _logger.LogInformation("MetaUpload: Attempting Path C (Classic) for TargetId={TargetId}...", targetId);
-             var handleC = await TryPathC_ClassicMediaEndpointAsync(client, targetId!, new NonDisposableStream(content), fileName, mime, size, ct);
-             if (!string.IsNullOrWhiteSpace(handleC))
-             {
-                _logger.LogInformation("MetaUpload: Path C Success. MediaId={MediaId}", handleC);
-                return new HeaderUploadResult(handleC!, mime, size, false);
-             }
-        }
-        catch (Exception ex)
-        {
-             _logger.LogWarning(ex, "MetaUpload: Path C (Classic) failed. Falling back to Path A/B.");
-        }
+        // For template headers, Meta expects an asset handle (header_handle), not a numeric media id.
+        // Path A/B are the upload-session flows that return asset handles.
 
-        // Rewind
-        try { content.Position = 0; } catch { }
-
-        // Path A: uploads session (Fallback for larger files)
-        // Returns a handle (4::...) OR a resolved numeric ID if possible.
+        // Path A: uploads session
         var handleA = await TryPathA_UploadsEndpointAsync(client, c.WabaId, fileTypeParam, new NonDisposableStream(content), fileName, mime, size, ct);
+        if (IsLikelyTemplateHeaderHandle(handleA))
+        {
+            _logger.LogInformation("MetaUpload: Path A Success. HeaderHandle={HeaderHandle}", handleA);
+            return new HeaderUploadResult(handleA!, mime, size, false);
+        }
         if (!string.IsNullOrWhiteSpace(handleA))
         {
-            _logger.LogInformation("MetaUpload: Path A Success. Handle={Handle}. Attempting resolution...", handleA);
-            var resolvedId = await ResolveMediaIdAsync(client, handleA!, null, ct);
-            _logger.LogInformation("MetaUpload: Path A Final Result={Result}", resolvedId);
-            return new HeaderUploadResult(resolvedId, mime, size, false);
+            _logger.LogWarning("MetaUpload: Path A returned non-handle value '{Value}'. Ignoring for template headers.", handleA);
         }
 
         // Rewind
         try { content.Position = 0; } catch { }
 
-        // Path B: Phased (Fallback)
+        // Path B: phased upload
         var handleB = await TryPathB_PhasedUploadAsync(client, c.WabaId, fileTypeParam, new NonDisposableStream(content), fileName, mime, size, ct);
+        if (IsLikelyTemplateHeaderHandle(handleB))
+        {
+             _logger.LogInformation("MetaUpload: Path B Success. HeaderHandle={HeaderHandle}", handleB);
+             return new HeaderUploadResult(handleB!, mime, size, false);
+        }
         if (!string.IsNullOrWhiteSpace(handleB))
         {
-             _logger.LogInformation("MetaUpload: Path B Success. Handle={Handle}. Attempting resolution...", handleB);
-             var resolvedId = await ResolveMediaIdAsync(client, handleB!, null, ct);
-             return new HeaderUploadResult(resolvedId, mime, size, false);
+            _logger.LogWarning("MetaUpload: Path B returned non-handle value '{Value}'. Ignoring for template headers.", handleB);
         }
 
         // Path B Retry (just in case flow falls here unexpectedly)
         var handleRetry = await TryPathB_PhasedUploadAsync(client, c.WabaId, fileTypeParam, content, fileName, mime, size, ct);
+        if (IsLikelyTemplateHeaderHandle(handleRetry))
+        {
+            return new HeaderUploadResult(handleRetry!, mime, size, false);
+        }
         if (!string.IsNullOrWhiteSpace(handleRetry))
         {
-            var resolvedId = await ResolveMediaIdAsync(client, handleRetry!, null, ct);
-            return new HeaderUploadResult(resolvedId, mime, size, false);
+            _logger.LogWarning("MetaUpload: Path B retry returned non-handle value '{Value}'.", handleRetry);
         }
 
-        throw new InvalidOperationException("Meta upload did not return an asset handle. Check app permissions and the response logs.");
+        throw new InvalidOperationException(
+            "Meta upload did not return a valid template header handle. Please retry upload and verify WABA upload permissions.");
     }
 
     // ── Path A: WABA uploads session (single-shot Content-Range) ────────────────
@@ -389,8 +379,11 @@ public sealed class MetaUploadService : IMetaUploadService
 
                 if (!string.IsNullOrWhiteSpace(s))
                 {
-                    handle = s;
-                    return true;
+                    if (IsLikelyTemplateHeaderHandle(s))
+                    {
+                        handle = s;
+                        return true;
+                    }
                 }
             }
         }
@@ -405,14 +398,32 @@ public sealed class MetaUploadService : IMetaUploadService
                      var s = prop.ValueKind == JsonValueKind.String ? prop.GetString() : prop.ToString();
                      if (!string.IsNullOrWhiteSpace(s))
                      {
-                         handle = s;
-                         return true;
+                         if (IsLikelyTemplateHeaderHandle(s))
+                         {
+                             handle = s;
+                             return true;
+                         }
                      }
                 }
             }
         }
 
         return false;
+    }
+
+    private static bool IsLikelyTemplateHeaderHandle(string? candidate)
+    {
+        if (string.IsNullOrWhiteSpace(candidate)) return false;
+
+        var s = candidate.Trim();
+        if (s.StartsWith("handle:", StringComparison.OrdinalIgnoreCase))
+            s = s.Substring("handle:".Length);
+
+        // Media IDs are typically numeric. header_handle values are token-like strings.
+        if (s.All(char.IsDigit)) return false;
+
+        // Most handles include ':'; keep a fallback for long opaque tokens.
+        return s.Contains(':') || s.Length >= 24;
     }
 
     // ── Path C: Classic Media Endpoint (POST /<targetId>/media) ────────────────

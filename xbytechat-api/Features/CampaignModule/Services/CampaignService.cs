@@ -4275,9 +4275,16 @@ namespace xbytechat.api.Features.CampaignModule.Services
 
         public async Task<bool> CheckNameAvailableAsync(Guid businessId, string name)
         {
+            var normalized = (name ?? string.Empty).Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(normalized))
+                return false;
+
             var exists = await _context.Campaigns
                 .AsNoTracking()
-                .AnyAsync(c => c.BusinessId == businessId && c.Name == name);
+                .AnyAsync(c =>
+                    c.BusinessId == businessId &&
+                    c.Name != null &&
+                    c.Name.ToLower() == normalized);
             return !exists;
         }
 

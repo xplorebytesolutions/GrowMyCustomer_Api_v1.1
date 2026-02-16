@@ -80,6 +80,10 @@ namespace xbytechat.api.Features.CampaignModule.Controllers
                     })
                     : BadRequest(new { success = false, message = "❌ Failed to create campaign" });
             }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
             catch (Exception ex)
             {
                 Log.Error(ex, "❌ Exception in CreateTextCampaign");
@@ -128,6 +132,10 @@ namespace xbytechat.api.Features.CampaignModule.Controllers
                 });
             }
             catch (UnauthorizedAccessException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (InvalidOperationException ex)
             {
                 return BadRequest(new { message = ex.Message });
             }

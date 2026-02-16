@@ -1,7 +1,9 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using xbytechat.api.Features.Inbox.DTOs;
 using xbytechat.api.Features.Inbox.Repositories;
 using xbytechat.api.Features.MessageManagement.DTOs;
@@ -24,7 +26,7 @@ namespace xbytechat.api.Features.Inbox.Services
 
         public async Task<MessageLog> SaveIncomingMessageAsync(InboxMessageDto dto)
         {
-            // ✅ Soft idempotency on (BusinessId + ProviderMessageId) if available.
+            // ? Soft idempotency on (BusinessId + ProviderMessageId) if available.
             // Normalize ProviderMessageId to avoid "space" duplicates.
             var providerMessageId = string.IsNullOrWhiteSpace(dto.ProviderMessageId)
                 ? null
@@ -37,7 +39,7 @@ namespace xbytechat.api.Features.Inbox.Services
                     return existing;
             }
 
-            // ✅ SentAt: caller should pass provider timestamp when available; otherwise fall back to server time.
+            // ? SentAt: caller should pass provider timestamp when available; otherwise fall back to server time.
             var sentAtUtc = dto.SentAt == default ? DateTime.UtcNow : dto.SentAt;
 
             var message = new MessageLog
@@ -59,11 +61,11 @@ namespace xbytechat.api.Features.Inbox.Services
 
                 IsIncoming = true,
 
-                // ✅ Keep status consistent for UI (incoming should never be updated by delivery webhooks now)
+                // ? Keep status consistent for UI (incoming should never be updated by delivery webhooks now)
                 Status = string.IsNullOrWhiteSpace(dto.Status) ? "Received" : dto.Status.Trim(),
                 SentAt = sentAtUtc,
 
-                // ✅ CreatedAt = insert time (server truth)
+                // ? CreatedAt = insert time (server truth)
                 CreatedAt = DateTime.UtcNow,
 
                 ProviderMessageId = providerMessageId,
@@ -76,7 +78,21 @@ namespace xbytechat.api.Features.Inbox.Services
             };
 
             await _repository.AddMessageAsync(message);
-            await _repository.SaveChangesAsync();
+            try
+            {
+                await _repository.SaveChangesAsync();
+            }
+            catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+            {
+                if (!string.IsNullOrWhiteSpace(providerMessageId))
+                {
+                    var existing = await _repository.FindByProviderMessageIdAsync(dto.BusinessId, providerMessageId);
+                    if (existing != null)
+                        return existing;
+                }
+
+                throw;
+            }
 
             return message;
         }
@@ -117,7 +133,7 @@ namespace xbytechat.api.Features.Inbox.Services
 
                 IsIncoming = false,
 
-                // ✅ Default outgoing status
+                // ? Default outgoing status
                 Status = string.IsNullOrWhiteSpace(dto.Status) ? "Queued" : dto.Status.Trim(),
                 SentAt = sentAtUtc,
 
@@ -133,7 +149,21 @@ namespace xbytechat.api.Features.Inbox.Services
             };
 
             await _repository.AddMessageAsync(message);
-            await _repository.SaveChangesAsync();
+            try
+            {
+                await _repository.SaveChangesAsync();
+            }
+            catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+            {
+                if (!string.IsNullOrWhiteSpace(providerMessageId))
+                {
+                    var existing = await _repository.FindByProviderMessageIdAsync(dto.BusinessId, providerMessageId);
+                    if (existing != null)
+                        return existing;
+                }
+
+                throw;
+            }
 
             return message;
         }
@@ -172,5 +202,8 @@ namespace xbytechat.api.Features.Inbox.Services
         {
             return await _repository.GetUnreadCountsForUserAsync(businessId, userId);
         }
+
+        private static bool IsUniqueViolation(DbUpdateException ex)
+            => ex.InnerException is PostgresException pg && pg.SqlState == PostgresErrorCodes.UniqueViolation;
     }
 }

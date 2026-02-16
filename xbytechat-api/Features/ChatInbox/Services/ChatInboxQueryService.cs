@@ -641,7 +641,11 @@ namespace xbytechat.api.Features.ChatInbox.Services
                     LocationAddress = x.LocationAddress,
                     SentAtUtc = utcInstant,
                     Status = x.Status,
-                    ErrorMessage = x.ErrorMessage
+                    ErrorMessage = x.ErrorMessage,
+                    MessageKind = x.MessageKind.HasValue ? x.MessageKind.Value.ToString() : null,
+                    TemplateName = x.TemplateName,
+                    TemplateLanguage = x.TemplateLanguage,
+                    TemplateSnapshotJson = x.TemplateSnapshotJson
                 };
             }).ToList();
 

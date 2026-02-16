@@ -51,6 +51,7 @@ namespace xbytechat.api.Features.CTAFlowBuilder.Models
         public Guid? MessageLogId { get; set; }              // tie to originating message
         public short? ButtonIndex { get; set; }              // which button was clicked (0..2)
         public Guid? RequestId { get; set; }
+        public string? ProviderEventId { get; set; }         // inbound click event/message id (for webhook idempotency)
 
     }
 }

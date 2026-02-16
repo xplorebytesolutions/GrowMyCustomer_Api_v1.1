@@ -6,6 +6,7 @@ namespace xbytechat.api.Features.Webhooks.Services
 {
     public class WebhookQueueService : IWebhookQueueService
     {
+        private const int QueueCapacity = 5000;
         private readonly Channel<JsonElement> _queue;
         private readonly ILogger<WebhookQueueService> _logger;
 
@@ -13,9 +14,9 @@ namespace xbytechat.api.Features.Webhooks.Services
         {
             _logger = logger;
 
-            var options = new BoundedChannelOptions(5000)
+            var options = new BoundedChannelOptions(QueueCapacity)
             {
-                FullMode = BoundedChannelFullMode.Wait,
+                FullMode = BoundedChannelFullMode.DropOldest,
                 SingleReader = true,
                 SingleWriter = false
             };
@@ -24,26 +25,35 @@ namespace xbytechat.api.Features.Webhooks.Services
 
             _logger.LogInformation(
                 "✅ WebhookQueueService initialized with capacity {Capacity}, FullMode={FullMode}, SingleReader={SingleReader}, SingleWriter={SingleWriter}.",
-                5000,
+                QueueCapacity,
                 options.FullMode,
                 options.SingleReader,
                 options.SingleWriter
             );
         }
 
-        public void Enqueue(JsonElement item)
+        public bool Enqueue(JsonElement item)
         {
-            // Optional: log size instead of full content to avoid noisy logs
             var length = item.ToString()?.Length ?? 0;
+            var count = _queue.Reader.Count;
+
+            if (count >= QueueCapacity)
+            {
+                _logger.LogWarning(
+                    "⚠️ Webhook queue full; oldest queued payload will be dropped to accept new payload. CurrentCount={Count}, PayloadLength={PayloadLength}.",
+                    count,
+                    length
+                );
+            }
 
             if (!_queue.Writer.TryWrite(item))
             {
-                _logger.LogError(
-                    "❌ Failed to enqueue webhook payload: queue is full. CurrentCount={Count}, PayloadLength={PayloadLength}.",
+                _logger.LogWarning(
+                    "⚠️ Webhook payload dropped: queue write rejected. CurrentCount={Count}, PayloadLength={PayloadLength}.",
                     _queue.Reader.Count,
                     length
                 );
-                throw new InvalidOperationException("⚠️ Webhook queue is full.");
+                return false;
             }
 
             _logger.LogInformation(
@@ -51,6 +61,7 @@ namespace xbytechat.api.Features.Webhooks.Services
                 _queue.Reader.Count,
                 length
             );
+            return true;
         }
 
         public async ValueTask<JsonElement> DequeueAsync(CancellationToken cancellationToken)

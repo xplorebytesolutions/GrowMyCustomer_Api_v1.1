@@ -9,11 +9,15 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using xbytechat.api.Features.ChatInbox.DTOs;
 using xbytechat.api.Features.ChatInbox.Models;
 using xbytechat.api.Features.ChatInbox.Services;
+using xbytechat.api.Features.Inbox.Hubs;
+using xbytechat.api.Features.Inbox.Models;
+using xbytechat.api.Features.Inbox.Services;
 using xbytechat.api.Models;
 
 namespace xbytechat.api.Features.ChatInbox.Controllers
@@ -28,6 +32,8 @@ namespace xbytechat.api.Features.ChatInbox.Controllers
         private readonly IChatInboxAssignmentService _assignmentService;
         private readonly IChatInboxMediaUploadService _mediaUploadService;
         private readonly IChatInboxMediaContentService _mediaContentService;
+        private readonly IChatSessionStateService _chatSessionStateService;
+        private readonly IHubContext<InboxHub> _hub;
         private readonly AppDbContext _db;
         private readonly ILogger<ChatInboxController> _logger;
 
@@ -37,6 +43,8 @@ namespace xbytechat.api.Features.ChatInbox.Controllers
             IChatInboxAssignmentService assignmentService,
             IChatInboxMediaUploadService mediaUploadService,
             IChatInboxMediaContentService mediaContentService,
+            IChatSessionStateService chatSessionStateService,
+            IHubContext<InboxHub> hub,
             AppDbContext db,
             ILogger<ChatInboxController> logger)
         {
@@ -45,6 +53,8 @@ namespace xbytechat.api.Features.ChatInbox.Controllers
             _assignmentService = assignmentService ?? throw new ArgumentNullException(nameof(assignmentService));
             _mediaUploadService = mediaUploadService ?? throw new ArgumentNullException(nameof(mediaUploadService));
             _mediaContentService = mediaContentService ?? throw new ArgumentNullException(nameof(mediaContentService));
+            _chatSessionStateService = chatSessionStateService ?? throw new ArgumentNullException(nameof(chatSessionStateService));
+            _hub = hub ?? throw new ArgumentNullException(nameof(hub));
             _db = db ?? throw new ArgumentNullException(nameof(db));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
@@ -330,6 +340,173 @@ namespace xbytechat.api.Features.ChatInbox.Controllers
                 businessId, contactPhone, limit, cursor, uid, ct);
 
             return Ok(byPhonePage);
+        }
+
+        [HttpGet("context")]
+        [ProducesResponseType(typeof(ChatInboxContextDto), 200)]
+        public async Task<ActionResult<ChatInboxContextDto>> GetContext(
+            [FromQuery] Guid contactId,
+            CancellationToken ct = default)
+        {
+            if (contactId == Guid.Empty) return BadRequest("contactId is required.");
+
+            var tokenBiz = GetBusinessId();
+            if (!tokenBiz.HasValue) return Unauthorized("businessId missing in token.");
+
+            var tokenUserId = GetUserId();
+            if (!tokenUserId.HasValue) return Unauthorized("userId missing in token.");
+
+            await EnsureCanAccessContactAsync(tokenBiz.Value, tokenUserId.Value, contactId, ct)
+                .ConfigureAwait(false);
+
+            var contact = await _db.Contacts
+                .AsNoTracking()
+                .Where(c => c.BusinessId == tokenBiz.Value && c.Id == contactId)
+                .Select(c => new
+                {
+                    c.Id,
+                    c.PhoneNumber
+                })
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+
+            if (contact == null) return NotFound("Contact not found.");
+
+            var latestTemplate = await _db.MessageLogs
+                .AsNoTracking()
+                .Where(m =>
+                    m.BusinessId == tokenBiz.Value &&
+                    m.ContactId == contactId &&
+                    m.MessageKind == MessageKind.Template)
+                .OrderByDescending(m => m.SentAt ?? m.CreatedAt)
+                .ThenByDescending(m => m.Id)
+                .Select(m => new
+                {
+                    m.TemplateName,
+                    m.TemplateLanguage
+                })
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+
+            var latestCampaignSend = await (
+                    from s in _db.CampaignSendLogs.AsNoTracking()
+                    join c in _db.Campaigns.AsNoTracking() on s.CampaignId equals c.Id into campaigns
+                    from campaign in campaigns.DefaultIfEmpty()
+                    where s.BusinessId == tokenBiz.Value && s.ContactId == contactId
+                    orderby (s.SentAt ?? s.CreatedAt) descending
+                    select new
+                    {
+                        CampaignName = campaign != null ? campaign.Name : null,
+                        Instant = s.SentAt ?? s.CreatedAt
+                    })
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+
+            var latestCampaignMessage = await (
+                    from m in _db.MessageLogs.AsNoTracking()
+                    join c in _db.Campaigns.AsNoTracking() on m.CampaignId equals c.Id into campaigns
+                    from campaign in campaigns.DefaultIfEmpty()
+                    where m.BusinessId == tokenBiz.Value &&
+                          m.ContactId == contactId &&
+                          m.CampaignId != null
+                    orderby (m.SentAt ?? m.CreatedAt) descending
+                    select new
+                    {
+                        CampaignName = campaign != null ? campaign.Name : null,
+                        Instant = m.SentAt ?? m.CreatedAt
+                    })
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+
+            var campaignName = latestCampaignSend?.CampaignName;
+            if (string.IsNullOrWhiteSpace(campaignName))
+            {
+                campaignName = latestCampaignMessage?.CampaignName;
+            }
+
+            var firstOutbound = await _db.MessageLogs
+                .AsNoTracking()
+                .Where(m => m.BusinessId == tokenBiz.Value && m.ContactId == contactId && !m.IsIncoming)
+                .OrderBy(m => m.SentAt ?? m.CreatedAt)
+                .ThenBy(m => m.Id)
+                .Select(m => new
+                {
+                    m.Source,
+                    HasCampaignId = m.CampaignId.HasValue
+                })
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+
+            var sessionState = await _db.ChatSessionStates
+                .AsNoTracking()
+                .Where(s => s.BusinessId == tokenBiz.Value && s.ContactId == contactId)
+                .Select(s => new
+                {
+                    s.Mode,
+                    s.UpdatedBy,
+                    s.LastUpdatedAt
+                })
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+
+            var escalation = BuildEscalation(sessionState?.Mode, sessionState?.UpdatedBy, sessionState?.LastUpdatedAt);
+
+            var lastFlowStep = await (
+                    from f in _db.FlowExecutionLogs.AsNoTracking()
+                    join m in _db.MessageLogs.AsNoTracking() on f.MessageLogId equals m.Id
+                    where f.BusinessId == tokenBiz.Value &&
+                          m.BusinessId == tokenBiz.Value &&
+                          m.ContactId == contactId
+                    orderby f.ExecutedAt descending
+                    select new ChatInboxFlowStepDto
+                    {
+                        FlowId = f.FlowId,
+                        StepId = f.StepId,
+                        StepName = string.IsNullOrWhiteSpace(f.StepName) ? null : f.StepName,
+                        ExecutedAtUtc = f.ExecutedAt,
+                        TriggeredByButton = string.IsNullOrWhiteSpace(f.TriggeredByButton) ? null : f.TriggeredByButton
+                    })
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+
+            ChatInboxJourneyStateDto? journeyState = null;
+            var normalizedPhone = NormalizeDigits(contact.PhoneNumber);
+            if (!string.IsNullOrWhiteSpace(normalizedPhone))
+            {
+                journeyState = await _db.ContactJourneyStates
+                    .AsNoTracking()
+                    .Where(j =>
+                        j.BusinessId == tokenBiz.Value &&
+                        j.ContactPhone == normalizedPhone)
+                    .OrderByDescending(j => j.UpdatedAt)
+                    .Select(j => new ChatInboxJourneyStateDto
+                    {
+                        FlowId = j.FlowId,
+                        JourneyText = j.JourneyText,
+                        LastButtonText = j.LastButtonText,
+                        UpdatedAtUtc = j.UpdatedAt
+                    })
+                    .FirstOrDefaultAsync(ct)
+                    .ConfigureAwait(false);
+            }
+
+            var context = new ChatInboxContextDto
+            {
+                ContactId = contactId,
+                CampaignName = string.IsNullOrWhiteSpace(campaignName) ? null : campaignName,
+                TemplateName = latestTemplate?.TemplateName,
+                TemplateLanguage = latestTemplate?.TemplateLanguage,
+                EntrySource = ClassifyEntrySource(
+                    firstOutbound?.Source,
+                    firstOutbound?.HasCampaignId == true,
+                    campaignName),
+                EntrySourceRaw = string.IsNullOrWhiteSpace(firstOutbound?.Source) ? null : firstOutbound!.Source,
+                Escalation = escalation,
+                LastFlowStep = lastFlowStep,
+                JourneyState = journeyState
+            };
+
+            return Ok(context);
         }
 
         [HttpPost("send-message")]
@@ -624,6 +801,75 @@ namespace xbytechat.api.Features.ChatInbox.Controllers
             }
         }
 
+        [HttpPost("transition")]
+        [ProducesResponseType(200)]
+        public async Task<IActionResult> Transition(
+            [FromBody] TransitionConversationDto request,
+            CancellationToken ct = default)
+        {
+            if (request == null) return BadRequest("Request body is required.");
+
+            if (request.BusinessId == Guid.Empty || request.ContactId == Guid.Empty)
+                return BadRequest("BusinessId and ContactId are required.");
+
+            var tokenBiz = GetBusinessId();
+            if (!tokenBiz.HasValue) return Unauthorized("businessId missing in token.");
+            if (tokenBiz.Value != request.BusinessId) return Forbid("businessId does not match your tenant.");
+
+            var actorUserId = GetUserId();
+            if (!actorUserId.HasValue) return Unauthorized("userId missing in token.");
+
+            var mode = ChatSessionState.NormalizeMode(request.Mode);
+            string inboxStatus;
+            try
+            {
+                inboxStatus = NormalizeTransitionStatus(request.InboxStatus, mode);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(ex.Message);
+            }
+
+            var pauseAutomation = request.IsAutomationPaused ?? mode == ChatSessionState.ModeAgent;
+
+            var contact = await _db.Contacts
+                .FirstOrDefaultAsync(c => c.BusinessId == request.BusinessId && c.Id == request.ContactId, ct)
+                .ConfigureAwait(false);
+
+            if (contact == null)
+                return NotFound("Contact not found.");
+
+            await using var tx = await _db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+
+            await _chatSessionStateService.SetChatModeAsync(request.BusinessId, request.ContactId, mode)
+                .ConfigureAwait(false);
+
+            contact.InboxStatus = inboxStatus;
+            contact.IsAutomationPaused = pauseAutomation;
+            contact.IsArchived = false;
+            contact.IsActive = true;
+
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+            await tx.CommitAsync(ct).ConfigureAwait(false);
+            await BroadcastRefreshAsync(request.BusinessId, ct).ConfigureAwait(false);
+
+            var updated = await TryGetConversationAsync(
+                    request.BusinessId,
+                    request.ContactId,
+                    actorUserId.Value,
+                    ct)
+                .ConfigureAwait(false);
+
+            return Ok(new
+            {
+                success = true,
+                mode,
+                inboxStatus,
+                isAutomationPaused = contact.IsAutomationPaused,
+                conversation = updated
+            });
+        }
+
         private Guid? GetBusinessId()
         {
             var raw = User.FindFirstValue("businessId") ?? User.FindFirstValue("BusinessId");
@@ -634,6 +880,88 @@ namespace xbytechat.api.Features.ChatInbox.Controllers
         {
             var raw = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("id");
             return Guid.TryParse(raw, out var id) ? id : null;
+        }
+
+        private static string NormalizeTransitionStatus(string? status, string mode)
+        {
+            var raw = (status ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return mode == ChatSessionState.ModeAgent ? "Pending" : "Open";
+            }
+
+            if (string.Equals(raw, "Open", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Open";
+            }
+
+            if (string.Equals(raw, "Pending", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Pending";
+            }
+
+            throw new ArgumentException("InboxStatus must be Open or Pending.");
+        }
+
+        private static ChatInboxEscalationDto? BuildEscalation(string? mode, string? updatedBy, DateTime? atUtc)
+        {
+            var normalizedMode = ChatSessionState.NormalizeMode(mode);
+            var marker = (updatedBy ?? string.Empty).Trim().ToLowerInvariant();
+            var isTalkToTeam = marker == "cta-talk-to-team";
+
+            if (!isTalkToTeam && normalizedMode != ChatSessionState.ModeAgent)
+            {
+                return null;
+            }
+
+            return new ChatInboxEscalationDto
+            {
+                IsEscalated = true,
+                Marker = isTalkToTeam ? "TalkToTeam" : "AgentMode",
+                EscalatedAtUtc = atUtc
+            };
+        }
+
+        private static string ClassifyEntrySource(string? source, bool hasCampaignId, string? campaignName)
+        {
+            if (hasCampaignId || !string.IsNullOrWhiteSpace(campaignName))
+            {
+                return "campaign";
+            }
+
+            var raw = (source ?? string.Empty).Trim().ToLowerInvariant();
+            if (raw.StartsWith("campaign", StringComparison.Ordinal) || raw.Contains("campaign"))
+            {
+                return "campaign";
+            }
+
+            if (raw.Contains("auto") || raw.Contains("automation") || raw.Contains("flow") || raw.Contains("cta"))
+            {
+                return "automation";
+            }
+
+            return "direct";
+        }
+
+        private static string NormalizeDigits(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+            return new string(value.Where(char.IsDigit).ToArray());
+        }
+
+        private async Task BroadcastRefreshAsync(Guid businessId, CancellationToken ct)
+        {
+            try
+            {
+                await _hub.Clients
+                    .Group($"business_{businessId}")
+                    .SendAsync("UnreadCountChanged", new { refresh = true }, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to broadcast inbox refresh. BusinessId={BusinessId}", businessId);
+            }
         }
 
         private async Task EnsureCanAccessContactAsync(
@@ -755,6 +1083,52 @@ namespace xbytechat.api.Features.ChatInbox.Controllers
                 .ConfigureAwait(false);
 
             return rows.FirstOrDefault();
+        }
+
+        public sealed class TransitionConversationDto
+        {
+            public Guid BusinessId { get; set; }
+            public Guid ContactId { get; set; }
+            public string Mode { get; set; } = ChatSessionState.ModeAgent;
+            public string? InboxStatus { get; set; }
+            public bool? IsAutomationPaused { get; set; }
+        }
+
+        public sealed class ChatInboxContextDto
+        {
+            public Guid ContactId { get; set; }
+            public string? CampaignName { get; set; }
+            public string? TemplateName { get; set; }
+            public string? TemplateLanguage { get; set; }
+            public string EntrySource { get; set; } = "direct"; // campaign | automation | direct
+            public string? EntrySourceRaw { get; set; }
+            public ChatInboxEscalationDto? Escalation { get; set; }
+            public ChatInboxFlowStepDto? LastFlowStep { get; set; }
+            public ChatInboxJourneyStateDto? JourneyState { get; set; }
+        }
+
+        public sealed class ChatInboxEscalationDto
+        {
+            public bool IsEscalated { get; set; }
+            public string Marker { get; set; } = "AgentMode";
+            public DateTime? EscalatedAtUtc { get; set; }
+        }
+
+        public sealed class ChatInboxFlowStepDto
+        {
+            public Guid? FlowId { get; set; }
+            public Guid StepId { get; set; }
+            public string? StepName { get; set; }
+            public string? TriggeredByButton { get; set; }
+            public DateTime ExecutedAtUtc { get; set; }
+        }
+
+        public sealed class ChatInboxJourneyStateDto
+        {
+            public Guid FlowId { get; set; }
+            public string JourneyText { get; set; } = string.Empty;
+            public string? LastButtonText { get; set; }
+            public DateTime UpdatedAtUtc { get; set; }
         }
     }
 }

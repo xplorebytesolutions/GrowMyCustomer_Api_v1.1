@@ -2,6 +2,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
+using xbytechat.api.Features.Webhooks.DTOs;
 using xbytechat.api.Features.Tracking.DTOs;
 using xbytechat.api.Features.Webhooks.Services;
 
@@ -16,19 +17,22 @@ namespace xbytechat.api.Features.Webhooks.Controllers
         private readonly AppDbContext _context;
         private readonly IWhatsAppWebhookService _webhookService;
         private readonly IWebhookQueueService _queue;
+        private readonly IFailedWebhookLogService _failedWebhookLogService;
 
         public WhatsAppWebhookController(
             ILogger<WhatsAppWebhookController> logger,
             IConfiguration config,
             AppDbContext context,
             IWhatsAppWebhookService webhookService,
-            IWebhookQueueService queue)
+            IWebhookQueueService queue,
+            IFailedWebhookLogService failedWebhookLogService)
         {
             _logger = logger;
             _config = config;
             _context = context;
             _webhookService = webhookService;
             _queue = queue;
+            _failedWebhookLogService = failedWebhookLogService;
         }
 
         // ✅ Step 1: Meta verification endpoint (GET)
@@ -74,7 +78,7 @@ namespace xbytechat.api.Features.Webhooks.Controllers
        
 
         [HttpPost]
-        public IActionResult HandleStatus([FromBody] JsonElement payload)
+        public async Task<IActionResult> HandleStatus([FromBody] JsonElement payload)
         {
             try
             {
@@ -88,7 +92,21 @@ namespace xbytechat.api.Features.Webhooks.Controllers
                 );
 
                 var cloned = payload.Clone();
-                _queue.Enqueue(cloned);
+                var enqueued = _queue.Enqueue(cloned);
+                if (!enqueued)
+                {
+                    await _failedWebhookLogService.LogFailureAsync(new FailedWebhookLogDto
+                    {
+                        FailureType = "QueueOverload",
+                        SourceModule = nameof(WhatsAppWebhookController),
+                        ErrorMessage = "Webhook queue full; payload dropped.",
+                        RawJson = payload.GetRawText(),
+                        CreatedAt = DateTime.UtcNow
+                    });
+
+                    _logger.LogWarning("⚠️ WhatsApp webhook queue overload. Payload persisted to FailedWebhookLogs.");
+                    return Ok(new { received = true });
+                }
 
                 _logger.LogInformation("📥 Webhook payload enqueued successfully.");
                 return Ok(new { received = true });

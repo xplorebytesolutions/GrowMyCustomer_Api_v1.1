@@ -65,6 +65,10 @@ public class MessageLog
     public Guid? RefMessageId { get; set; }
     public string? Source { get; set; } // e.g., "campaign", "flow", "manual"
 
+    public MessageKind? MessageKind { get; set; }
+    public string? TemplateSnapshotJson { get; set; }
+    public string? TemplateName { get; set; }
+    public string? TemplateLanguage { get; set; }
 
     public string? Provider { get; set; }                     // "Meta_cloud", "Pinnacle", etc.
     public string? ProviderMessageId { get; set; }            // e.g., "wamid.HBg..."; indexed
@@ -75,4 +79,12 @@ public class MessageLog
     public decimal? PriceAmount { get; set; }                 // nullable until known
     public string? PriceCurrency { get; set; }     
     // "USD", "INR", etc.
+}
+
+public enum MessageKind
+{
+    FreeformText = 1,
+    Template = 2,
+    Media = 3,
+    Location = 4
 }

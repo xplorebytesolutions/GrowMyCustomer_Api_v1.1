@@ -196,71 +196,158 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 return await SendViaProviderAsync(businessId, provider, p => p.SendInteractiveAsync(doc.RootElement.Clone()), phoneNumberId);
             }
 
+            var je = ToJsonElement(payload);
+
             // NEW: if the anonymous payload looks like a WhatsApp "template" message,
             // extract the parts and call SendTemplateAsync directly (no raw object pass-through).
-            if (payload is JsonElement je && je.ValueKind == JsonValueKind.Object &&
-                je.TryGetProperty("type", out var t) && t.GetString() == "template" &&
+            if (je.ValueKind == JsonValueKind.Object &&
+                je.TryGetProperty("type", out var t) &&
+                string.Equals(t.GetString(), "template", StringComparison.OrdinalIgnoreCase) &&
                 je.TryGetProperty("to", out var toProp) &&
+                toProp.ValueKind == JsonValueKind.String &&
                 je.TryGetProperty("template", out var tmpl) &&
+                tmpl.ValueKind == JsonValueKind.Object &&
                 tmpl.TryGetProperty("name", out var nameProp) &&
+                nameProp.ValueKind == JsonValueKind.String &&
                 tmpl.TryGetProperty("language", out var langProp) &&
+                langProp.ValueKind == JsonValueKind.Object &&
                 langProp.TryGetProperty("code", out var codeProp) &&
-                tmpl.TryGetProperty("components", out var comps))
+                codeProp.ValueKind == JsonValueKind.String &&
+                tmpl.TryGetProperty("components", out var comps) &&
+                comps.ValueKind == JsonValueKind.Array)
             {
-                var to = toProp.GetString()!;
-                var name = nameProp.GetString()!;
-                var code = codeProp.GetString()!;
-                // Materialize components as plain anonymous objects to guarantee no $type:
-                var components = new List<object>();
-                foreach (var c in comps.EnumerateArray())
+                var to = toProp.GetString();
+                var name = nameProp.GetString();
+                var code = codeProp.GetString();
+
+                if (!string.IsNullOrWhiteSpace(to) &&
+                    !string.IsNullOrWhiteSpace(name) &&
+                    !string.IsNullOrWhiteSpace(code))
                 {
-                    var type = c.GetProperty("type").GetString();
-                    if (type == "body")
+                    try
                     {
-                        var pars = c.TryGetProperty("parameters", out var pr)
-                            ? pr.EnumerateArray().Select(p => new { type = p.GetProperty("type").GetString(), text = p.GetProperty("text").GetString() }).ToArray()
-                            : System.Array.Empty<object>();
-                        components.Add(new { type = "body", parameters = pars });
-                    }
-                    else if (type == "header")
-                    {
-                        // support header image
-                        if (c.TryGetProperty("parameters", out var pr) && pr.GetArrayLength() > 0)
+                        var components = new List<object>();
+                        foreach (var c in comps.EnumerateArray())
                         {
-                            var p0 = pr[0];
-                            if (p0.TryGetProperty("type", out var pt) && pt.GetString() == "image")
+                            if (c.ValueKind != JsonValueKind.Object) continue;
+                            if (!c.TryGetProperty("type", out var typeProp) || typeProp.ValueKind != JsonValueKind.String) continue;
+
+                            var type = (typeProp.GetString() ?? string.Empty).Trim().ToLowerInvariant();
+                            if (type == "body")
                             {
-                                var link = p0.GetProperty("image").GetProperty("link").GetString();
-                                components.Add(new { type = "header", parameters = new object[] { new { type = "image", image = new { link } } } });
+                                var bodyParams = new List<object>();
+                                if (c.TryGetProperty("parameters", out var pr) && pr.ValueKind == JsonValueKind.Array)
+                                {
+                                    foreach (var p in pr.EnumerateArray())
+                                    {
+                                        if (p.ValueKind != JsonValueKind.Object) continue;
+                                        if (p.TryGetProperty("type", out var pt) &&
+                                            pt.ValueKind == JsonValueKind.String &&
+                                            string.Equals(pt.GetString(), "text", StringComparison.OrdinalIgnoreCase) &&
+                                            p.TryGetProperty("text", out var txt) &&
+                                            txt.ValueKind == JsonValueKind.String)
+                                        {
+                                            bodyParams.Add(new { type = "text", text = txt.GetString() });
+                                        }
+                                    }
+                                }
+                                components.Add(new { type = "body", parameters = bodyParams.ToArray() });
                             }
-                            else
+                            else if (type == "header")
                             {
-                                components.Add(new { type = "header", parameters = new object[] { } });
+                                var headerParams = new List<object>();
+                                if (c.TryGetProperty("parameters", out var pr) && pr.ValueKind == JsonValueKind.Array)
+                                {
+                                    foreach (var p in pr.EnumerateArray())
+                                    {
+                                        if (p.ValueKind != JsonValueKind.Object) continue;
+                                        if (!p.TryGetProperty("type", out var pt) || pt.ValueKind != JsonValueKind.String) continue;
+
+                                        var ptRaw = (pt.GetString() ?? string.Empty).Trim().ToLowerInvariant();
+                                        if (ptRaw == "image" &&
+                                            p.TryGetProperty("image", out var imageObj) &&
+                                            imageObj.ValueKind == JsonValueKind.Object &&
+                                            imageObj.TryGetProperty("link", out var linkProp) &&
+                                            linkProp.ValueKind == JsonValueKind.String)
+                                        {
+                                            headerParams.Add(new
+                                            {
+                                                type = "image",
+                                                image = new { link = linkProp.GetString() }
+                                            });
+                                        }
+                                    }
+                                }
+                                components.Add(new { type = "header", parameters = headerParams.ToArray() });
+                            }
+                            else if (type == "button")
+                            {
+                                if (!c.TryGetProperty("sub_type", out var subTypeProp) || subTypeProp.ValueKind != JsonValueKind.String) continue;
+                                if (!c.TryGetProperty("index", out var indexProp) || indexProp.ValueKind != JsonValueKind.String) continue;
+
+                                var subType = subTypeProp.GetString();
+                                var index = indexProp.GetString();
+                                if (!string.Equals(subType, "url", StringComparison.OrdinalIgnoreCase)) continue;
+
+                                string? urlParam = null;
+                                if (c.TryGetProperty("parameters", out var pr) && pr.ValueKind == JsonValueKind.Array)
+                                {
+                                    foreach (var p in pr.EnumerateArray())
+                                    {
+                                        if (p.ValueKind != JsonValueKind.Object) continue;
+                                        if (p.TryGetProperty("text", out var txt) && txt.ValueKind == JsonValueKind.String)
+                                        {
+                                            urlParam = txt.GetString();
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if (!string.IsNullOrWhiteSpace(urlParam))
+                                {
+                                    components.Add(new
+                                    {
+                                        type = "button",
+                                        sub_type = "url",
+                                        index,
+                                        parameters = new object[] { new { type = "text", text = urlParam } }
+                                    });
+                                }
                             }
                         }
-                        else components.Add(new { type = "header", parameters = new object[] { } });
+
+                        return await SendViaProviderAsync(businessId, provider,
+                            p => p.SendTemplateAsync(to, name, code, components),
+                            phoneNumberId);
                     }
-                    else if (type == "button")
+                    catch
                     {
-                        var subType = c.GetProperty("sub_type").GetString();
-                        var index = c.GetProperty("index").GetString();
-                        if (subType == "url" && c.TryGetProperty("parameters", out var pr) && pr.GetArrayLength() > 0)
-                        {
-                            var urlParam = pr[0].GetProperty("text").GetString();
-                            components.Add(new { type = "button", sub_type = "url", index, parameters = new object[] { new { type = "text", text = urlParam } } });
-                        }
+                        // Fall through to generic interactive path for malformed template components.
                     }
                 }
-
-                return await SendViaProviderAsync(businessId, provider,
-                    p => p.SendTemplateAsync(to, name, code, components),
-                    phoneNumberId);
             }
 
-            // Fallback: send as-is via interactive
-            return await SendViaProviderAsync(businessId, provider, p => p.SendInteractiveAsync(payload), phoneNumberId);
-        }
+            // Fallback: avoid passing JsonElement directly to provider adapters.
+            object interactivePayload = payload;
+            if (payload is JsonElement payloadElement)
+            {
+                try
+                {
+                    interactivePayload = payloadElement.ValueKind switch
+                    {
+                        JsonValueKind.Object => JsonSerializer.Deserialize<Dictionary<string, object?>>(payloadElement.GetRawText()) ?? payload,
+                        JsonValueKind.Array => JsonSerializer.Deserialize<List<object?>>(payloadElement.GetRawText()) ?? payload,
+                        _ => payload
+                    };
+                }
+                catch
+                {
+                    interactivePayload = payload;
+                }
+            }
 
+            return await SendViaProviderAsync(businessId, provider, p => p.SendInteractiveAsync(interactivePayload), phoneNumberId);
+        }
 
 
 
@@ -420,18 +507,273 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 return !string.IsNullOrWhiteSpace(recipient);
             }
 
+            if (root.TryGetProperty("recipient", out var recipientProp) && recipientProp.ValueKind == JsonValueKind.String)
+            {
+                recipient = recipientProp.GetString();
+                return !string.IsNullOrWhiteSpace(recipient);
+            }
+
+            if (root.TryGetProperty("recipientNumber", out var recipientNumberProp) && recipientNumberProp.ValueKind == JsonValueKind.String)
+            {
+                recipient = recipientNumberProp.GetString();
+                return !string.IsNullOrWhiteSpace(recipient);
+            }
+
+            if (root.TryGetProperty("Recipient", out var recipientPascalProp) && recipientPascalProp.ValueKind == JsonValueKind.String)
+            {
+                recipient = recipientPascalProp.GetString();
+                return !string.IsNullOrWhiteSpace(recipient);
+            }
+
+            if (root.TryGetProperty("RecipientNumber", out var recipientNumberPascalProp) && recipientNumberPascalProp.ValueKind == JsonValueKind.String)
+            {
+                recipient = recipientNumberPascalProp.GetString();
+                return !string.IsNullOrWhiteSpace(recipient);
+            }
+
             return false;
+        }
+
+        private enum HeaderMediaReferenceKind
+        {
+            None = 0,
+            HttpsLink = 1,
+            MetaMediaId = 2
+        }
+
+        private sealed class HeaderMediaResolution
+        {
+            public HeaderMediaReferenceKind Kind { get; init; } = HeaderMediaReferenceKind.None;
+            public string? Value { get; init; }
+            public string? ErrorMessage { get; init; }
+        }
+
+        private static bool IsLikelyMetaMediaId(string? value)
+        {
+            var v = (value ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(v)) return false;
+            if (v.StartsWith("handle:", StringComparison.OrdinalIgnoreCase)) return false;
+            if (v.StartsWith("id:", StringComparison.OrdinalIgnoreCase)) return false;
+            if (v.Contains("://", StringComparison.Ordinal)) return false;
+            if (v.Any(char.IsWhiteSpace)) return false;
+            return true;
+        }
+
+        private static HeaderMediaResolution ResolveHeaderMediaReference(string? headerMediaUrl, bool isMetaCloud)
+        {
+            var raw = string.IsNullOrWhiteSpace(headerMediaUrl) ? null : headerMediaUrl.Trim();
+            if (string.IsNullOrWhiteSpace(raw))
+                return new HeaderMediaResolution { Kind = HeaderMediaReferenceKind.None };
+
+            if (raw.StartsWith("handle:", StringComparison.OrdinalIgnoreCase))
+            {
+                var handleValue = raw.Substring("handle:".Length).Trim();
+                if (string.IsNullOrWhiteSpace(handleValue))
+                {
+                    return new HeaderMediaResolution
+                    {
+                        ErrorMessage = "Header media handle is empty."
+                    };
+                }
+
+                if (!isMetaCloud)
+                {
+                    return new HeaderMediaResolution
+                    {
+                        ErrorMessage = "Uploaded media handle is supported only for META_CLOUD."
+                    };
+                }
+
+                return new HeaderMediaResolution
+                {
+                    Kind = HeaderMediaReferenceKind.MetaMediaId,
+                    Value = handleValue
+                };
+            }
+
+            if (raw.StartsWith("id:", StringComparison.OrdinalIgnoreCase))
+            {
+                var idValue = raw.Substring("id:".Length).Trim();
+                if (string.IsNullOrWhiteSpace(idValue))
+                {
+                    return new HeaderMediaResolution
+                    {
+                        ErrorMessage = "Header media id is empty."
+                    };
+                }
+
+                if (!isMetaCloud)
+                {
+                    return new HeaderMediaResolution
+                    {
+                        ErrorMessage = "Header media id is supported only for META_CLOUD."
+                    };
+                }
+
+                return new HeaderMediaResolution
+                {
+                    Kind = HeaderMediaReferenceKind.MetaMediaId,
+                    Value = idValue
+                };
+            }
+
+            if (Uri.TryCreate(raw, UriKind.Absolute, out var parsed))
+            {
+                if (string.Equals(parsed.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+                {
+                    return new HeaderMediaResolution
+                    {
+                        Kind = HeaderMediaReferenceKind.HttpsLink,
+                        Value = raw
+                    };
+                }
+
+                return new HeaderMediaResolution
+                {
+                    ErrorMessage = "Header media URL must be an absolute HTTPS URL."
+                };
+            }
+
+            if (isMetaCloud && IsLikelyMetaMediaId(raw))
+            {
+                return new HeaderMediaResolution
+                {
+                    Kind = HeaderMediaReferenceKind.MetaMediaId,
+                    Value = raw
+                };
+            }
+
+            return new HeaderMediaResolution
+            {
+                ErrorMessage = isMetaCloud
+                    ? "Provide a valid HTTPS URL or Meta media handle/id."
+                    : "Provide a valid HTTPS URL."
+            };
+        }
+
+        private static JsonElement ToJsonElement(object payload)
+        {
+            if (payload is JsonElement je) return je;
+            if (payload is string s)
+            {
+                var trimmed = s.TrimStart();
+                if (trimmed.StartsWith("{", StringComparison.Ordinal) ||
+                    trimmed.StartsWith("[", StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        using var stringDoc = JsonDocument.Parse(s);
+                        return stringDoc.RootElement.Clone();
+                    }
+                    catch
+                    {
+                        // Fallback to serializer path below for non-JSON strings.
+                    }
+                }
+            }
+            using var doc = JsonDocument.Parse(JsonSerializer.Serialize(payload));
+            return doc.RootElement.Clone();
+        }
+
+        private async Task<(string Provider, string PhoneNumberId)> ResolveProviderAndSenderAsync(
+            Guid businessId,
+            string? requestedProvider,
+            string? requestedPhoneNumberId,
+            bool allowPinnacle = true)
+        {
+            var provider = string.IsNullOrWhiteSpace(requestedProvider)
+                ? null
+                : requestedProvider.Trim().ToUpperInvariant();
+            requestedPhoneNumberId = string.IsNullOrWhiteSpace(requestedPhoneNumberId)
+                ? null
+                : requestedPhoneNumberId.Trim();
+
+            if (string.IsNullOrWhiteSpace(provider) && !string.IsNullOrWhiteSpace(requestedPhoneNumberId))
+            {
+                provider = await _db.WhatsAppPhoneNumbers
+                    .AsNoTracking()
+                    .Where(x => x.BusinessId == businessId &&
+                                x.IsActive &&
+                                x.PhoneNumberId == requestedPhoneNumberId)
+                    .Select(x => x.Provider)
+                    .FirstOrDefaultAsync();
+            }
+
+            if (string.IsNullOrWhiteSpace(provider))
+            {
+                var defPhone = await _db.WhatsAppPhoneNumbers
+                    .AsNoTracking()
+                    .Where(x => x.BusinessId == businessId && x.IsActive)
+                    .OrderByDescending(x => x.IsDefault)
+                    .ThenByDescending(x => x.UpdatedAt ?? x.CreatedAt)
+                    .Select(x => new { x.Provider, x.PhoneNumberId })
+                    .FirstOrDefaultAsync();
+
+                if (defPhone != null)
+                {
+                    provider ??= (defPhone.Provider ?? string.Empty).Trim().ToUpperInvariant();
+                    requestedPhoneNumberId ??= defPhone.PhoneNumberId;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(provider))
+            {
+                provider = await _db.WhatsAppSettings
+                    .AsNoTracking()
+                    .Where(s => s.BusinessId == businessId && s.IsActive)
+                    .Select(s => s.Provider)
+                    .FirstOrDefaultAsync();
+            }
+
+            provider = (provider ?? string.Empty).Trim().ToUpperInvariant();
+
+            if (provider != "META_CLOUD" && provider != "PINNACLE")
+                throw new InvalidOperationException("No valid WhatsApp provider configured.");
+
+            if (!allowPinnacle && provider == "PINNACLE")
+                throw new InvalidOperationException("PINNACLE not allowed for this path.");
+
+            if (!string.IsNullOrWhiteSpace(requestedPhoneNumberId))
+            {
+                var senderProvider = await _db.WhatsAppPhoneNumbers
+                    .AsNoTracking()
+                    .Where(x =>
+                        x.BusinessId == businessId &&
+                        x.IsActive &&
+                        x.PhoneNumberId == requestedPhoneNumberId)
+                    .Select(x => x.Provider)
+                    .FirstOrDefaultAsync();
+
+                var senderMatchesProvider = !string.IsNullOrWhiteSpace(senderProvider) &&
+                                            string.Equals(senderProvider, provider, StringComparison.OrdinalIgnoreCase);
+
+                if (!senderMatchesProvider)
+                    throw new InvalidOperationException("Provided PhoneNumberId does not belong to the selected provider.");
+            }
+
+            if (string.IsNullOrWhiteSpace(requestedPhoneNumberId))
+            {
+                requestedPhoneNumberId = await _db.WhatsAppPhoneNumbers
+                    .AsNoTracking()
+                    .Where(x => x.BusinessId == businessId && x.IsActive && string.Equals(x.Provider, provider, StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(x => x.IsDefault)
+                    .ThenByDescending(x => x.UpdatedAt ?? x.CreatedAt)
+                    .Select(x => x.PhoneNumberId)
+                    .FirstOrDefaultAsync();
+            }
+
+            if (provider == "META_CLOUD" && string.IsNullOrWhiteSpace(requestedPhoneNumberId))
+                throw new InvalidOperationException("Missing PhoneNumberId for META_CLOUD.");
+
+            return (provider, requestedPhoneNumberId ?? string.Empty);
         }
 
         private static string? TryExtractRecipientFromPayload(object payload)
         {
-            if (payload is JsonElement jsonElement)
-                return TryReadRecipientFromPayload(jsonElement, out var fromJsonElement) ? fromJsonElement : null;
-
             try
             {
-                using var payloadDoc = JsonDocument.Parse(JsonSerializer.Serialize(payload));
-                return TryReadRecipientFromPayload(payloadDoc.RootElement, out var fromPayloadObject) ? fromPayloadObject : null;
+                var je = ToJsonElement(payload);
+                return TryReadRecipientFromPayload(je, out var fromPayloadObject) ? fromPayloadObject : null;
             }
             catch
             {
@@ -561,6 +903,116 @@ namespace xbytechat.api.Features.MessagesEngine.Services
             return map;
         }
 
+        private static string NormalizeSnapshotHeaderType(string? headerKind, string? mediaUrl)
+        {
+            var kind = (headerKind ?? string.Empty).Trim().ToLowerInvariant();
+            if (!string.IsNullOrWhiteSpace(kind)) return kind;
+            return string.IsNullOrWhiteSpace(mediaUrl) ? "none" : "image";
+        }
+
+        private static string? TryExtractFilenameFromMediaUrl(string? mediaUrl)
+        {
+            if (string.IsNullOrWhiteSpace(mediaUrl)) return null;
+            try
+            {
+                if (Uri.TryCreate(mediaUrl, UriKind.Absolute, out var uri))
+                {
+                    var fileName = System.IO.Path.GetFileName(uri.LocalPath);
+                    return string.IsNullOrWhiteSpace(fileName) ? null : fileName;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static List<object> BuildButtonsSnapshot(string? templateUrlButtonsJson, IReadOnlyList<string>? urlButtonParams)
+        {
+            var buttons = new List<object>();
+            var dynamicValues = (urlButtonParams ?? Array.Empty<string>()).Take(3).ToArray();
+
+            if (!string.IsNullOrWhiteSpace(templateUrlButtonsJson))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(templateUrlButtonsJson);
+                    if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                    {
+                        var i = 0;
+                        foreach (var btn in doc.RootElement.EnumerateArray())
+                        {
+                            var type = btn.TryGetProperty("type", out var t) ? t.GetString() : null;
+                            type ??= btn.TryGetProperty("buttonType", out var bt) ? bt.GetString() : null;
+                            type ??= btn.TryGetProperty("sub_type", out var st) ? st.GetString() : null;
+                            type = string.IsNullOrWhiteSpace(type) ? "url" : type.Trim().ToLowerInvariant();
+
+                            var text = btn.TryGetProperty("text", out var txt) ? txt.GetString() : null;
+                            text ??= btn.TryGetProperty("title", out var title) ? title.GetString() : null;
+                            text = string.IsNullOrWhiteSpace(text) ? $"Button {i + 1}" : text.Trim();
+
+                            var value = (i < dynamicValues.Length ? dynamicValues[i] : null)?.Trim();
+                            if (string.IsNullOrWhiteSpace(value))
+                            {
+                                value = btn.TryGetProperty("url", out var url) ? url.GetString() : null;
+                                value ??= btn.TryGetProperty("value", out var val) ? val.GetString() : null;
+                                value ??= btn.TryGetProperty("targetUrl", out var target) ? target.GetString() : null;
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(value))
+                            {
+                                buttons.Add(new { type, text, value = value.Trim() });
+                            }
+                            i++;
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            if (buttons.Count == 0 && dynamicValues.Length > 0)
+            {
+                for (var i = 0; i < dynamicValues.Length; i++)
+                {
+                    var value = dynamicValues[i]?.Trim();
+                    if (!string.IsNullOrWhiteSpace(value))
+                        buttons.Add(new { type = "url", text = $"Button {i + 1}", value });
+                }
+            }
+
+            return buttons;
+        }
+
+        private static string BuildTemplateSnapshotJson(
+            string? headerKind,
+            string? headerText,
+            string? headerMediaUrl,
+            string? bodyText,
+            string? footerText,
+            List<object>? buttons)
+        {
+            var normalizedHeaderType = NormalizeSnapshotHeaderType(headerKind, headerMediaUrl);
+            var snapshot = new
+            {
+                header = new
+                {
+                    type = normalizedHeaderType,
+                    text = string.IsNullOrWhiteSpace(headerText) ? null : headerText.Trim(),
+                    mediaUrl = string.IsNullOrWhiteSpace(headerMediaUrl) ? null : headerMediaUrl.Trim(),
+                    filename = normalizedHeaderType == "document" ? TryExtractFilenameFromMediaUrl(headerMediaUrl) : null
+                },
+                body = new
+                {
+                    text = string.IsNullOrWhiteSpace(bodyText) ? string.Empty : bodyText
+                },
+                footer = new
+                {
+                    text = string.IsNullOrWhiteSpace(footerText) ? null : footerText.Trim()
+                },
+                buttons = buttons ?? new List<object>()
+            };
+
+            return JsonSerializer.Serialize(snapshot);
+        }
+
         // ======================================================================
         //  SEND METHODS (kept from your file; minor tidy + consistent responses)
         // ======================================================================
@@ -610,6 +1062,13 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 var resolvedBody = TemplateParameterHelper.FillPlaceholders(
                     dto.TemplateBody ?? "",
                     dto.TemplateParameters?.Values.ToList() ?? new List<string>());
+                var snapshotJson = BuildTemplateSnapshotJson(
+                    headerKind: "none",
+                    headerText: null,
+                    headerMediaUrl: null,
+                    bodyText: resolvedBody,
+                    footerText: null,
+                    buttons: new List<object>());
 
                 // Log result
                 var log = new MessageLog
@@ -619,6 +1078,10 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     RecipientNumber = dto.RecipientNumber,
                     MessageContent = dto.TemplateName ?? "N/A",
                     RenderedBody = resolvedBody,
+                    MessageKind = MessageKind.Template,
+                    TemplateName = dto.TemplateName,
+                    TemplateLanguage = "en_US",
+                    TemplateSnapshotJson = snapshotJson,
                     MediaUrl = null,
                     Status = sendResult.Success ? "Sent" : "Failed",
                     ErrorMessage = sendResult.Success ? null : sendResult.Message,
@@ -669,6 +1132,18 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     RenderedBody = TemplateParameterHelper.FillPlaceholders(
                         dto.TemplateBody ?? "",
                         dto.TemplateParameters?.Values.ToList() ?? new List<string>()),
+                    MessageKind = MessageKind.Template,
+                    TemplateName = dto.TemplateName,
+                    TemplateLanguage = "en_US",
+                    TemplateSnapshotJson = BuildTemplateSnapshotJson(
+                        headerKind: "none",
+                        headerText: null,
+                        headerMediaUrl: null,
+                        bodyText: TemplateParameterHelper.FillPlaceholders(
+                            dto.TemplateBody ?? "",
+                            dto.TemplateParameters?.Values.ToList() ?? new List<string>()),
+                        footerText: null,
+                        buttons: new List<object>()),
                     Status = "Failed",
                     ErrorMessage = ex.Message,
                     RawResponse = ex.ToString(),
@@ -760,6 +1235,13 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 var renderedBody = TemplateParameterHelper.FillPlaceholders(
                     dto.TemplateBody ?? "",
                     dto.TemplateParameters ?? new List<string>());
+                var snapshotJson = BuildTemplateSnapshotJson(
+                    headerKind: "video",
+                    headerText: null,
+                    headerMediaUrl: dto.HeaderVideoUrl,
+                    bodyText: renderedBody,
+                    footerText: null,
+                    buttons: new List<object>());
 
                 var log = new MessageLog
                 {
@@ -769,12 +1251,19 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     MessageContent = dto.TemplateName!,
                     MediaUrl = dto.HeaderVideoUrl,
                     RenderedBody = renderedBody,
+                    MessageKind = MessageKind.Template,
+                    TemplateName = dto.TemplateName,
+                    TemplateLanguage = langCode,
+                    TemplateSnapshotJson = snapshotJson,
                     Status = sendResult.Success ? "Sent" : "Failed",
                     ErrorMessage = sendResult.ErrorMessage ?? (sendResult.Success ? null : "WhatsApp API returned an error."),
                     RawResponse = sendResult.RawResponse,
                     MessageId = sendResult.MessageId,
-                    SentAt = DateTime.UtcNow,
+                    Provider = provider,
+                    ProviderMessageId = sendResult.MessageId,
+                    SentAt = sendResult.Success ? DateTime.UtcNow : null,
                     CreatedAt = DateTime.UtcNow,
+                    Source = "direct",
                     CTAFlowConfigId = dto.CTAFlowConfigId,
                     CTAFlowStepId = dto.CTAFlowStepId
                 };
@@ -804,9 +1293,20 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                         MessageContent = dto.TemplateName ?? "",
                         RenderedBody = TemplateParameterHelper.FillPlaceholders(dto.TemplateBody ?? "", dto.TemplateParameters ?? new List<string>()),
                         MediaUrl = dto.HeaderVideoUrl,
+                        MessageKind = MessageKind.Template,
+                        TemplateName = dto.TemplateName,
+                        TemplateLanguage = string.IsNullOrWhiteSpace(dto.LanguageCode) ? "en_US" : dto.LanguageCode,
+                        TemplateSnapshotJson = BuildTemplateSnapshotJson(
+                            headerKind: "video",
+                            headerText: null,
+                            headerMediaUrl: dto.HeaderVideoUrl,
+                            bodyText: TemplateParameterHelper.FillPlaceholders(dto.TemplateBody ?? "", dto.TemplateParameters ?? new List<string>()),
+                            footerText: null,
+                            buttons: new List<object>()),
                         Status = "Failed",
                         ErrorMessage = ex.Message,
                         CreatedAt = DateTime.UtcNow,
+                        Source = "direct",
                         CTAFlowConfigId = dto.CTAFlowConfigId,
                         CTAFlowStepId = dto.CTAFlowStepId
                     });
@@ -824,81 +1324,11 @@ namespace xbytechat.api.Features.MessagesEngine.Services
             {
                 var businessId = _httpContextAccessor.HttpContext?.User?.GetBusinessId()
                     ?? throw new UnauthorizedAccessException("❌ Cannot resolve BusinessId from context.");
-
-                // Normalize inbound intent
-                string? providerUpper = string.IsNullOrWhiteSpace(dto.Provider)
-                    ? null
-                    : dto.Provider!.Trim().ToUpperInvariant();
-                string? providerKey = providerUpper?.ToLowerInvariant();
-                string? phoneNumberId = string.IsNullOrWhiteSpace(dto.PhoneNumberId) ? null : dto.PhoneNumberId!.Trim();
-
-                // Derive provider/sender from default phone row if needed
-                if (string.IsNullOrWhiteSpace(providerUpper))
-                {
-                    var defaultPhone = await _db.WhatsAppPhoneNumbers
-                        .AsNoTracking()
-                        .Where(n => n.BusinessId == businessId && n.IsActive)
-                        .OrderByDescending(n => n.IsDefault)
-                        .ThenByDescending(n => n.UpdatedAt ?? n.CreatedAt)
-                        .Select(n => new { n.Provider, n.PhoneNumberId })
-                        .FirstOrDefaultAsync();
-
-                    if (defaultPhone == null)
-                    {
-                        var anySetting = await _db.WhatsAppSettings
-                            .AsNoTracking()
-                            .Where(s => s.BusinessId == businessId && s.IsActive)
-                            .OrderByDescending(s => s.UpdatedAt ?? s.CreatedAt)
-                            .Select(s => s.Provider)
-                            .FirstOrDefaultAsync();
-
-                        if (string.IsNullOrWhiteSpace(anySetting))
-                            return ResponseResult.ErrorInfo("❌ WhatsApp configuration not found (no active numbers or settings).");
-
-                        providerUpper = anySetting.Trim().ToUpperInvariant();
-                        providerKey = providerUpper.ToLowerInvariant();
-                    }
-                    else
-                    {
-                        providerUpper = (defaultPhone.Provider ?? string.Empty).Trim().ToUpperInvariant();
-                        providerKey = providerUpper.ToLowerInvariant();
-                        if (string.IsNullOrWhiteSpace(phoneNumberId))
-                            phoneNumberId = defaultPhone.PhoneNumberId;
-                    }
-                }
-
-                if (providerUpper != "PINNACLE" && providerUpper != "META_CLOUD")
-                    return ResponseResult.ErrorInfo("❌ Invalid provider. Must be 'PINNACLE' or 'META_CLOUD'.");
-
-                if (string.IsNullOrWhiteSpace(phoneNumberId))
-                {
-                    var phoneRow = await _db.WhatsAppPhoneNumbers
-                        .AsNoTracking()
-                        .Where(n => n.BusinessId == businessId
-                                    && n.IsActive
-                                    && n.Provider.ToLower() == providerKey)
-                        .OrderByDescending(n => n.IsDefault)
-                        .ThenByDescending(n => n.UpdatedAt ?? n.CreatedAt)
-                        .Select(n => n.PhoneNumberId)
-                        .FirstOrDefaultAsync();
-
-                    if (!string.IsNullOrWhiteSpace(phoneRow))
-                        phoneNumberId = phoneRow;
-                }
-
-                if (providerUpper == "META_CLOUD" && string.IsNullOrWhiteSpace(phoneNumberId))
-                    return ResponseResult.ErrorInfo("❌ Missing PhoneNumberId for META_CLOUD. Configure a default sender or pass PhoneNumberId.");
-
-                var chosenSetting = await _db.WhatsAppSettings
-                    .AsNoTracking()
-                    .Where(s => s.BusinessId == businessId
-                                && s.IsActive
-                                && s.Provider.ToLower() == providerKey)
-                    .OrderByDescending(s => s.UpdatedAt ?? s.CreatedAt)
-                    .FirstOrDefaultAsync();
-
-                if (chosenSetting == null)
-                    return ResponseResult.ErrorInfo("❌ WhatsApp settings row not found for the selected provider.");
+                var (providerUpper, phoneNumberId) = await ResolveProviderAndSenderAsync(
+                    businessId,
+                    dto.Provider,
+                    dto.PhoneNumberId,
+                    allowPinnacle: true);
 
                 // Contact upsert/touch
                 Guid? contactId = null;
@@ -906,7 +1336,7 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 var recipientRaw = (dto.RecipientNumber ?? string.Empty).Trim();
                 var recipientDigits = PhoneNumberNormalizer.NormalizeToE164Digits(recipientRaw, "IN");
                 if (string.IsNullOrWhiteSpace(recipientDigits))
-                    return ResponseResult.ErrorInfo("? Invalid recipient number.", $"Invalid/unsupported phone: '{recipientRaw}'");
+                    return ResponseResult.ErrorInfo("❌ Invalid recipient number.", $"Invalid/unsupported phone: '{recipientRaw}'");
 
                 var consentBlock = await EnforceOutboundConsentGuardAsync(businessId, recipientDigits);
                 if (consentBlock != null) return consentBlock;
@@ -958,7 +1388,7 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 // Send
                 var sendResult = await SendViaProviderAsync(
                     businessId,
-                    providerUpper!,
+                    providerUpper,
                     p => p.SendTextAsync(recipientDigits, dto.TextContent),
                     phoneNumberId
                 );
@@ -999,9 +1429,11 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     ErrorMessage = sendResult.Success ? null : sendResult.Message,
                     RawResponse = sendResult.RawResponse,
                     CreatedAt = DateTime.UtcNow,
-                    SentAt = DateTime.UtcNow,
+                    SentAt = sendResult.Success ? DateTime.UtcNow : null,
                     MessageId = messageId,
-                    ProviderMessageId = messageId
+                    ProviderMessageId = messageId,
+                    MessageKind = MessageKind.FreeformText,
+                    Source = dto.Source
                 };
 
                 await _db.MessageLogs.AddAsync(log);
@@ -1048,7 +1480,8 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                             MessageContent = dto.TextContent,
                             Status = "Failed",
                             ErrorMessage = ex.Message,
-                            CreatedAt = DateTime.UtcNow
+                            CreatedAt = DateTime.UtcNow,
+                            MessageKind = MessageKind.FreeformText
                         });
                         await _db.SaveChangesAsync();
                     }
@@ -1076,88 +1509,31 @@ namespace xbytechat.api.Features.MessagesEngine.Services
             try
             {
                 var businessId = _httpContextAccessor.HttpContext?.User?.GetBusinessId()
-                    ?? throw new UnauthorizedAccessException("? Cannot resolve BusinessId from context.");
+                    ?? throw new UnauthorizedAccessException("❌ Cannot resolve BusinessId from context.");
 
                 if (dto == null) throw new ArgumentNullException(nameof(dto));
 
                 var type = (mediaType ?? string.Empty).Trim().ToLowerInvariant();
                 if (type is not ("image" or "document" or "video" or "audio"))
-                    return ResponseResult.ErrorInfo("? Invalid media type.", "Media type must be 'image', 'document', 'video', or 'audio'.");
+                    return ResponseResult.ErrorInfo("❌ Invalid media type.", "Media type must be 'image', 'document', 'video', or 'audio'.");
 
                 var recipientRaw = (dto.RecipientNumber ?? string.Empty).Trim();
                 var recipientDigits = PhoneNumberNormalizer.NormalizeToE164Digits(recipientRaw, "IN");
                 if (string.IsNullOrWhiteSpace(recipientDigits))
-                    return ResponseResult.ErrorInfo("? Invalid recipient number.", $"Invalid/unsupported phone: '{recipientRaw}'");
+                    return ResponseResult.ErrorInfo("❌ Invalid recipient number.", $"Invalid/unsupported phone: '{recipientRaw}'");
 
                 var consentBlock = await EnforceOutboundConsentGuardAsync(businessId, recipientDigits);
                 if (consentBlock != null) return consentBlock;
 
                 var mediaId = (dto.MediaId ?? string.Empty).Trim();
                 if (string.IsNullOrWhiteSpace(mediaId))
-                    return ResponseResult.ErrorInfo("? Missing media id.", "mediaId is required.");
+                    return ResponseResult.ErrorInfo("❌ Missing media id.", "mediaId is required.");
 
-                // Normalize provider + resolve phone_number_id similarly to SendTextDirectAsync
-                string? providerUpper = string.IsNullOrWhiteSpace(dto.Provider)
-                    ? null
-                    : dto.Provider!.Trim().ToUpperInvariant();
-                string? providerKey = providerUpper?.ToLowerInvariant();
-                string? phoneNumberId = string.IsNullOrWhiteSpace(dto.PhoneNumberId) ? null : dto.PhoneNumberId!.Trim();
-
-                if (string.IsNullOrWhiteSpace(providerUpper))
-                {
-                    var defaultPhone = await _db.WhatsAppPhoneNumbers
-                        .AsNoTracking()
-                        .Where(n => n.BusinessId == businessId && n.IsActive)
-                        .OrderByDescending(n => n.IsDefault)
-                        .ThenByDescending(n => n.UpdatedAt ?? n.CreatedAt)
-                        .Select(n => new { n.Provider, n.PhoneNumberId })
-                        .FirstOrDefaultAsync();
-
-                    if (defaultPhone == null)
-                    {
-                        var anySetting = await _db.WhatsAppSettings
-                            .AsNoTracking()
-                            .Where(s => s.BusinessId == businessId && s.IsActive)
-                            .OrderByDescending(s => s.UpdatedAt ?? s.CreatedAt)
-                            .Select(s => s.Provider)
-                            .FirstOrDefaultAsync();
-
-                        if (string.IsNullOrWhiteSpace(anySetting))
-                            return ResponseResult.ErrorInfo("? WhatsApp configuration not found (no active numbers or settings).");
-
-                        providerUpper = anySetting.Trim().ToUpperInvariant();
-                        providerKey = providerUpper.ToLowerInvariant();
-                    }
-                    else
-                    {
-                        providerUpper = (defaultPhone.Provider ?? string.Empty).Trim().ToUpperInvariant();
-                        providerKey = providerUpper.ToLowerInvariant();
-                        if (string.IsNullOrWhiteSpace(phoneNumberId))
-                            phoneNumberId = defaultPhone.PhoneNumberId;
-                    }
-                }
-
-                if (providerUpper != "META_CLOUD")
-                    return ResponseResult.ErrorInfo("? Unsupported provider for Inbox media.", "Inbox media is supported only for META_CLOUD.");
-
-                if (string.IsNullOrWhiteSpace(phoneNumberId))
-                {
-                    var phoneRow = await _db.WhatsAppPhoneNumbers
-                        .AsNoTracking()
-                        .Where(n => n.BusinessId == businessId
-                                    && n.IsActive
-                                    && n.Provider.ToLower() == providerKey)
-                        .OrderByDescending(n => n.IsDefault)
-                        .ThenByDescending(n => n.UpdatedAt ?? n.CreatedAt)
-                        .Select(n => n.PhoneNumberId)
-                        .FirstOrDefaultAsync();
-
-                    if (!string.IsNullOrWhiteSpace(phoneRow))
-                        phoneNumberId = phoneRow;
-                }
-
-                if (string.IsNullOrWhiteSpace(phoneNumberId))
-                    return ResponseResult.ErrorInfo("? Missing PhoneNumberId for META_CLOUD. Configure a default sender or pass PhoneNumberId.");
+                var (providerUpper, phoneNumberId) = await ResolveProviderAndSenderAsync(
+                    businessId,
+                    dto.Provider,
+                    dto.PhoneNumberId,
+                    allowPinnacle: false);
 
                 Guid? contactId = dto.ContactId != Guid.Empty ? dto.ContactId : null;
                 if (!contactId.HasValue)
@@ -1170,7 +1546,7 @@ namespace xbytechat.api.Features.MessagesEngine.Services
 
                 var caption = string.IsNullOrWhiteSpace(dto.Caption) ? null : dto.Caption.Trim();
                 if (type == "audio" && !string.IsNullOrWhiteSpace(caption))
-                    return ResponseResult.ErrorInfo("? Audio does not support captions.", "Remove Caption/Text when sending an audio message.");
+                    return ResponseResult.ErrorInfo("❌ Audio does not support captions.", "Remove Caption/Text when sending an audio message.");
 
                 object payload = type switch
                 {
@@ -1207,7 +1583,7 @@ namespace xbytechat.api.Features.MessagesEngine.Services
 
                 var sendResult = await SendViaProviderAsync(
                     businessId,
-                    providerUpper!,
+                    providerUpper,
                     p => p.SendInteractiveAsync(payload),
                     phoneNumberId
                 );
@@ -1262,10 +1638,11 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     ErrorMessage = sendResult.Success ? null : sendResult.Message,
                     RawResponse = sendResult.RawResponse,
                     CreatedAt = DateTime.UtcNow,
-                    SentAt = DateTime.UtcNow,
+                    SentAt = sendResult.Success ? DateTime.UtcNow : null,
                     MessageId = messageId,
                     ProviderMessageId = messageId,
-                    Source = dto.Source
+                    Source = dto.Source,
+                    MessageKind = MessageKind.Media
                 };
 
                 await _db.MessageLogs.AddAsync(log);
@@ -1275,8 +1652,8 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 {
                     Success = sendResult.Success,
                     Message = sendResult.Success
-                        ? "? Media message sent successfully."
-                        : (sendResult.Message ?? "? WhatsApp API returned an error."),
+                        ? "✅ Media message sent successfully."
+                        : (sendResult.Message ?? "❌ WhatsApp API returned an error."),
                     Data = new
                     {
                         Success = sendResult.Success,
@@ -1290,7 +1667,7 @@ namespace xbytechat.api.Features.MessagesEngine.Services
             }
             catch (Exception ex)
             {
-                return ResponseResult.ErrorInfo("? Failed to send media message.", ex.ToString());
+                return ResponseResult.ErrorInfo("❌ Failed to send media message.", ex.ToString());
             }
         }
 
@@ -1299,84 +1676,28 @@ namespace xbytechat.api.Features.MessagesEngine.Services
             try
             {
                 var businessId = _httpContextAccessor.HttpContext?.User?.GetBusinessId()
-                    ?? throw new UnauthorizedAccessException("? Cannot resolve BusinessId from context.");
+                    ?? throw new UnauthorizedAccessException("❌ Cannot resolve BusinessId from context.");
 
                 if (dto == null) throw new ArgumentNullException(nameof(dto));
 
                 if (dto.Latitude < -90 || dto.Latitude > 90)
-                    return ResponseResult.ErrorInfo("? Invalid latitude.", "Latitude must be between -90 and 90.");
+                    return ResponseResult.ErrorInfo("❌ Invalid latitude.", "Latitude must be between -90 and 90.");
                 if (dto.Longitude < -180 || dto.Longitude > 180)
-                    return ResponseResult.ErrorInfo("? Invalid longitude.", "Longitude must be between -180 and 180.");
+                    return ResponseResult.ErrorInfo("❌ Invalid longitude.", "Longitude must be between -180 and 180.");
 
                 var recipientRaw = (dto.RecipientNumber ?? string.Empty).Trim();
                 var recipientDigits = PhoneNumberNormalizer.NormalizeToE164Digits(recipientRaw, "IN");
                 if (string.IsNullOrWhiteSpace(recipientDigits))
-                    return ResponseResult.ErrorInfo("? Invalid recipient number.", $"Invalid/unsupported phone: '{recipientRaw}'");
+                    return ResponseResult.ErrorInfo("❌ Invalid recipient number.", $"Invalid/unsupported phone: '{recipientRaw}'");
 
                 var consentBlock = await EnforceOutboundConsentGuardAsync(businessId, recipientDigits);
                 if (consentBlock != null) return consentBlock;
 
-                string? providerUpper = string.IsNullOrWhiteSpace(dto.Provider)
-                    ? null
-                    : dto.Provider!.Trim().ToUpperInvariant();
-                string? providerKey = providerUpper?.ToLowerInvariant();
-                string? phoneNumberId = string.IsNullOrWhiteSpace(dto.PhoneNumberId) ? null : dto.PhoneNumberId!.Trim();
-
-                if (string.IsNullOrWhiteSpace(providerUpper))
-                {
-                    var defaultPhone = await _db.WhatsAppPhoneNumbers
-                        .AsNoTracking()
-                        .Where(n => n.BusinessId == businessId && n.IsActive)
-                        .OrderByDescending(n => n.IsDefault)
-                        .ThenByDescending(n => n.UpdatedAt ?? n.CreatedAt)
-                        .Select(n => new { n.Provider, n.PhoneNumberId })
-                        .FirstOrDefaultAsync();
-
-                    if (defaultPhone == null)
-                    {
-                        var anySetting = await _db.WhatsAppSettings
-                            .AsNoTracking()
-                            .Where(s => s.BusinessId == businessId && s.IsActive)
-                            .OrderByDescending(s => s.UpdatedAt ?? s.CreatedAt)
-                            .Select(s => s.Provider)
-                            .FirstOrDefaultAsync();
-
-                        if (string.IsNullOrWhiteSpace(anySetting))
-                            return ResponseResult.ErrorInfo("? WhatsApp configuration not found (no active numbers or settings).");
-
-                        providerUpper = anySetting.Trim().ToUpperInvariant();
-                        providerKey = providerUpper.ToLowerInvariant();
-                    }
-                    else
-                    {
-                        providerUpper = (defaultPhone.Provider ?? string.Empty).Trim().ToUpperInvariant();
-                        providerKey = providerUpper.ToLowerInvariant();
-                        if (string.IsNullOrWhiteSpace(phoneNumberId))
-                            phoneNumberId = defaultPhone.PhoneNumberId;
-                    }
-                }
-
-                if (providerUpper != "META_CLOUD")
-                    return ResponseResult.ErrorInfo("? Unsupported provider for Inbox location.", "Inbox location is supported only for META_CLOUD.");
-
-                if (string.IsNullOrWhiteSpace(phoneNumberId))
-                {
-                    var phoneRow = await _db.WhatsAppPhoneNumbers
-                        .AsNoTracking()
-                        .Where(n => n.BusinessId == businessId
-                                    && n.IsActive
-                                    && n.Provider.ToLower() == providerKey)
-                        .OrderByDescending(n => n.IsDefault)
-                        .ThenByDescending(n => n.UpdatedAt ?? n.CreatedAt)
-                        .Select(n => n.PhoneNumberId)
-                        .FirstOrDefaultAsync();
-
-                    if (!string.IsNullOrWhiteSpace(phoneRow))
-                        phoneNumberId = phoneRow;
-                }
-
-                if (string.IsNullOrWhiteSpace(phoneNumberId))
-                    return ResponseResult.ErrorInfo("? Missing PhoneNumberId for META_CLOUD. Configure a default sender or pass PhoneNumberId.");
+                var (providerUpper, phoneNumberId) = await ResolveProviderAndSenderAsync(
+                    businessId,
+                    dto.Provider,
+                    dto.PhoneNumberId,
+                    allowPinnacle: false);
 
                 object payload = new
                 {
@@ -1394,7 +1715,7 @@ namespace xbytechat.api.Features.MessagesEngine.Services
 
                 var sendResult = await SendViaProviderAsync(
                     businessId,
-                    providerUpper!,
+                    providerUpper,
                     p => p.SendInteractiveAsync(payload),
                     phoneNumberId
                 );
@@ -1445,10 +1766,11 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     ErrorMessage = sendResult.Success ? null : sendResult.Message,
                     RawResponse = sendResult.RawResponse,
                     CreatedAt = DateTime.UtcNow,
-                    SentAt = DateTime.UtcNow,
+                    SentAt = sendResult.Success ? DateTime.UtcNow : null,
                     MessageId = messageId,
                     ProviderMessageId = messageId,
-                    Source = dto.Source
+                    Source = dto.Source,
+                    MessageKind = MessageKind.Location
                 };
 
                 await _db.MessageLogs.AddAsync(log);
@@ -1458,8 +1780,8 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 {
                     Success = sendResult.Success,
                     Message = sendResult.Success
-                        ? "? Location sent successfully."
-                        : (sendResult.Message ?? "? WhatsApp API returned an error."),
+                        ? "✅ Location sent successfully."
+                        : (sendResult.Message ?? "❌ WhatsApp API returned an error."),
                     Data = new
                     {
                         Success = sendResult.Success,
@@ -1473,7 +1795,7 @@ namespace xbytechat.api.Features.MessagesEngine.Services
             }
             catch (Exception ex)
             {
-                return ResponseResult.ErrorInfo("? Failed to send location message.", ex.ToString());
+                return ResponseResult.ErrorInfo("❌ Failed to send location message.", ex.ToString());
             }
         }
 
@@ -1550,8 +1872,12 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     ErrorMessage = sendResult.Success ? null : sendResult.Message,
                     RawResponse = sendResult.RawResponse,
                     CreatedAt = DateTime.UtcNow,
-                    SentAt = DateTime.UtcNow,
-                    MessageId = messageId
+                    SentAt = sendResult.Success ? DateTime.UtcNow : null,
+                    MessageId = messageId,
+                    Provider = dto.Provider,
+                    ProviderMessageId = messageId,
+                    MessageKind = MessageKind.FreeformText,
+                    Source = dto.Source
                 };
 
                 await _db.MessageLogs.AddAsync(log);
@@ -1609,7 +1935,10 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                         MessageContent = dto.TextContent,
                         Status = "Failed",
                         ErrorMessage = ex.Message,
-                        CreatedAt = DateTime.UtcNow
+                        CreatedAt = DateTime.UtcNow,
+                        Provider = dto.Provider,
+                        MessageKind = MessageKind.FreeformText,
+                        Source = dto.Source
                     });
 
                     await _db.SaveChangesAsync();
@@ -1985,121 +2314,83 @@ namespace xbytechat.api.Features.MessagesEngine.Services
             {
                 // 🔎 Normalize inbound + respect DeliveryMode for logging/analytics
                 var mode = dto.DeliveryMode; // default is Queued if caller didn't set
-
-                string? providerUpper = string.IsNullOrWhiteSpace(dto.Provider)
-                    ? null
-                    : dto.Provider!.Trim().ToUpperInvariant();
-                string? providerKey = providerUpper?.ToLowerInvariant();
-                string? phoneNumberId = string.IsNullOrWhiteSpace(dto.PhoneNumberId)
-                    ? null
-                    : dto.PhoneNumberId!.Trim();
-
-                // Resolve missing provider/sender from WhatsAppPhoneNumbers
-                if (string.IsNullOrWhiteSpace(providerUpper))
-                {
-                    var defPhone = await _db.WhatsAppPhoneNumbers
-                        .AsNoTracking()
-                        .Where(n => n.BusinessId == businessId && n.IsActive)
-                        .OrderByDescending(n => n.IsDefault)
-                        .ThenByDescending(n => n.UpdatedAt ?? n.CreatedAt)
-                        .Select(n => new { n.Provider, n.PhoneNumberId })
-                        .FirstOrDefaultAsync();
-
-                    if (defPhone != null)
-                    {
-                        providerUpper = (defPhone.Provider ?? string.Empty).Trim().ToUpperInvariant();
-                        providerKey = providerUpper.ToLowerInvariant();
-                        if (string.IsNullOrWhiteSpace(phoneNumberId))
-                            phoneNumberId = defPhone.PhoneNumberId;
-                    }
-                }
-
-                if (string.IsNullOrWhiteSpace(providerUpper))
-                {
-                    var anySettingProvider = await _db.WhatsAppSettings
-                        .AsNoTracking()
-                        .Where(s => s.BusinessId == businessId && s.IsActive)
-                        .OrderByDescending(s => s.UpdatedAt ?? s.CreatedAt)
-                        .Select(s => s.Provider)
-                        .FirstOrDefaultAsync();
-
-                    if (!string.IsNullOrWhiteSpace(anySettingProvider))
-                    {
-                        providerUpper = anySettingProvider.Trim().ToUpperInvariant();
-                        providerKey = providerUpper.ToLowerInvariant();
-                    }
-                }
-
-                if (providerUpper != "PINNACLE" && providerUpper != "META_CLOUD")
-                {
-                    return ResponseResult.ErrorInfo(
-                        "❌ Missing provider.",
-                        "No active WhatsApp sender found. Configure a PINNACLE or META_CLOUD sender for this business."
-                    );
-                }
-
-                if (string.IsNullOrWhiteSpace(phoneNumberId))
-                {
-                    var pn = await _db.WhatsAppPhoneNumbers
-                        .AsNoTracking()
-                        .Where(n => n.BusinessId == businessId
-                                    && n.IsActive
-                                    && n.Provider.ToLower() == providerKey)
-                        .OrderByDescending(n => n.IsDefault)
-                        .ThenByDescending(n => n.UpdatedAt ?? n.CreatedAt)
-                        .Select(n => n.PhoneNumberId)
-                        .FirstOrDefaultAsync();
-
-                    if (!string.IsNullOrWhiteSpace(pn))
-                        phoneNumberId = pn;
-                }
-
-                if (providerUpper == "META_CLOUD" && string.IsNullOrWhiteSpace(phoneNumberId))
-                    return ResponseResult.ErrorInfo(
-                        "❌ Missing PhoneNumberId for META_CLOUD. Configure a default sender or pass PhoneNumberId.");
+                var (providerUpper, phoneNumberId) = await ResolveProviderAndSenderAsync(
+                    businessId,
+                    dto.Provider,
+                    dto.PhoneNumberId,
+                    allowPinnacle: true);
 
                 var consentBlock = await EnforceOutboundConsentGuardAsync(businessId, dto.RecipientNumber);
                 if (consentBlock != null) return consentBlock;
+
+                var templateMeta = await _db.WhatsAppTemplates
+                    .AsNoTracking()
+                    .Where(t => t.BusinessId == businessId
+                                && t.Provider.ToUpper() == providerUpper
+                                && t.Name == dto.TemplateName)
+                    .OrderByDescending(t => t.UpdatedAt > t.CreatedAt ? t.UpdatedAt : t.CreatedAt)
+                    .Select(t => new
+                    {
+                        t.TemplateId,
+                        t.Name,
+                        t.LanguageCode,
+                        t.HeaderKind,
+                        t.HeaderText,
+                        t.Body,
+                        t.UrlButtons
+                    })
+                    .FirstOrDefaultAsync();
 
                 // Build components (header + body + dynamic URL buttons)
                 var components = new List<object>();
 
                 var headerKind = (dto.HeaderKind ?? string.Empty).Trim().ToLowerInvariant();
                 var headerUrl = string.IsNullOrWhiteSpace(dto.HeaderMediaUrl) ? null : dto.HeaderMediaUrl!.Trim();
+                var isMetaCloud = string.Equals(providerUpper, "META_CLOUD", StringComparison.OrdinalIgnoreCase);
+                var mediaResolution = ResolveHeaderMediaReference(headerUrl, isMetaCloud);
+                if (!string.IsNullOrWhiteSpace(mediaResolution.ErrorMessage))
+                {
+                    return ResponseResult.ErrorInfo("❌ Invalid header media reference.", mediaResolution.ErrorMessage);
+                }
 
                 if (!string.IsNullOrWhiteSpace(headerUrl))
                 {
+                    object? headerParam = null;
+
                     if (headerKind == "image")
                     {
-                        components.Add(new
-                        {
-                            type = "header",
-                            parameters = new object[]
-                            {
-                                new { type = "image", image = new { link = headerUrl } }
-                            }
-                        });
+                        if (mediaResolution.Kind == HeaderMediaReferenceKind.MetaMediaId)
+                            headerParam = new { type = "image", image = new { id = mediaResolution.Value } };
+                        else if (mediaResolution.Kind == HeaderMediaReferenceKind.HttpsLink)
+                            headerParam = new { type = "image", image = new { link = headerUrl } };
+                        else
+                            return ResponseResult.ErrorInfo("❌ Invalid image header URL.", "Use HTTPS URL or uploaded Meta media handle/id.");
                     }
                     else if (headerKind == "video")
                     {
-                        components.Add(new
-                        {
-                            type = "header",
-                            parameters = new object[]
-                            {
-                                new { type = "video", video = new { link = headerUrl } }
-                            }
-                        });
+                        if (mediaResolution.Kind == HeaderMediaReferenceKind.MetaMediaId)
+                            headerParam = new { type = "video", video = new { id = mediaResolution.Value } };
+                        else if (mediaResolution.Kind == HeaderMediaReferenceKind.HttpsLink)
+                            headerParam = new { type = "video", video = new { link = headerUrl } };
+                        else
+                            return ResponseResult.ErrorInfo("❌ Invalid video header URL.", "Use HTTPS URL or uploaded Meta media handle/id.");
                     }
                     else if (headerKind == "document")
+                    {
+                        if (mediaResolution.Kind == HeaderMediaReferenceKind.MetaMediaId)
+                            headerParam = new { type = "document", document = new { id = mediaResolution.Value } };
+                        else if (mediaResolution.Kind == HeaderMediaReferenceKind.HttpsLink)
+                            headerParam = new { type = "document", document = new { link = headerUrl } };
+                        else
+                            return ResponseResult.ErrorInfo("❌ Invalid document header URL.", "Use HTTPS URL or uploaded Meta media handle/id.");
+                    }
+
+                    if (headerParam != null)
                     {
                         components.Add(new
                         {
                             type = "header",
-                            parameters = new object[]
-                            {
-                                new { type = "document", document = new { link = headerUrl } }
-                            }
+                            parameters = new object[] { headerParam }
                         });
                     }
                 }
@@ -2130,14 +2421,30 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 }
 
                 var lang = string.IsNullOrWhiteSpace(dto.LanguageCode) ? "en_US" : dto.LanguageCode!;
+                var resolvedBody = TemplateParameterHelper.FillPlaceholders(
+                    dto.TemplateBody ?? templateMeta?.Body ?? string.Empty,
+                    dto.TemplateParameters ?? new List<string>());
+                if (string.IsNullOrWhiteSpace(resolvedBody))
+                    resolvedBody = dto.TemplateBody ?? templateMeta?.Body ?? dto.TemplateName ?? string.Empty;
+
+                var snapshotButtons = BuildButtonsSnapshot(templateMeta?.UrlButtons, urlParams);
+                var snapshotJson = BuildTemplateSnapshotJson(
+                    headerKind: headerKind,
+                    headerText: templateMeta?.HeaderText,
+                    headerMediaUrl: headerUrl,
+                    bodyText: resolvedBody,
+                    footerText: null,
+                    buttons: snapshotButtons);
 
                 _logger?.LogInformation(
-                    "➡️ SEND-INTENT tmpl={Template} to={To} provider={Provider} pnid={PhoneNumberId} mode={Mode} ctaFlowConfig={CtaFlowConfigId} ctaFlowStep={CtaFlowStepId}",
+                    "➡️ SEND-INTENT tmpl={Template} to={To} provider={Provider} pnid={PhoneNumberId} mode={Mode} headerKind={HeaderKind} headerRefKind={HeaderRefKind} ctaFlowConfig={CtaFlowConfigId} ctaFlowStep={CtaFlowStepId}",
                     dto.TemplateName,
                     dto.RecipientNumber,
                     providerUpper,
                     phoneNumberId ?? "(default)",
                     mode,
+                    headerKind,
+                    mediaResolution.Kind,
                     dto.CTAFlowConfigId,
                     dto.CTAFlowStepId
                 );
@@ -2169,9 +2476,11 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     RecipientNumber = dto.RecipientNumber,
                     MessageContent = dto.TemplateName,
                     MediaUrl = headerUrl,
-                    RenderedBody = TemplateParameterHelper.FillPlaceholders(
-                        dto.TemplateBody ?? string.Empty,
-                        dto.TemplateParameters ?? new List<string>()),
+                    RenderedBody = resolvedBody,
+                    MessageKind = MessageKind.Template,
+                    TemplateName = dto.TemplateName,
+                    TemplateLanguage = lang,
+                    TemplateSnapshotJson = snapshotJson,
 
                     CTAFlowConfigId = dto.CTAFlowConfigId,
                     CTAFlowStepId = dto.CTAFlowStepId,
@@ -2224,6 +2533,18 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                         RenderedBody = TemplateParameterHelper.FillPlaceholders(
                             dto.TemplateBody ?? string.Empty,
                             dto.TemplateParameters ?? new List<string>()),
+                        MessageKind = MessageKind.Template,
+                        TemplateName = dto.TemplateName,
+                        TemplateLanguage = string.IsNullOrWhiteSpace(dto.LanguageCode) ? "en_US" : dto.LanguageCode,
+                        TemplateSnapshotJson = BuildTemplateSnapshotJson(
+                            headerKind: dto.HeaderKind,
+                            headerText: null,
+                            headerMediaUrl: dto.HeaderMediaUrl,
+                            bodyText: TemplateParameterHelper.FillPlaceholders(
+                                dto.TemplateBody ?? string.Empty,
+                                dto.TemplateParameters ?? new List<string>()),
+                            footerText: null,
+                            buttons: BuildButtonsSnapshot(null, dto.UrlButtonParams)),
                         Status = "Failed",
                         ErrorMessage = ex.Message,
                         CreatedAt = DateTime.UtcNow,
@@ -2389,13 +2710,24 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 if (string.IsNullOrWhiteSpace(templateName))
                     return ResponseResult.ErrorInfo("❌ Campaign has no template selected.");
 
-                var lang = await _db.WhatsAppTemplates
+                var templateMeta = await _db.WhatsAppTemplates
                     .AsNoTracking()
                     .Where(w => w.BusinessId == businessId && w.Name == templateName)
                     .OrderByDescending(w => (w.UpdatedAt > w.CreatedAt ? w.UpdatedAt : w.CreatedAt))
-                    .Select(w => w.LanguageCode)
+                    .Select(w => new
+                    {
+                        w.TemplateId,
+                        w.LanguageCode,
+                        w.HeaderKind,
+                        w.HeaderText,
+                        w.Body,
+                        w.UrlButtons
+                    })
                     .FirstOrDefaultAsync();
-                if (string.IsNullOrWhiteSpace(lang)) lang = "en_US";
+                var lang = string.IsNullOrWhiteSpace(templateMeta?.LanguageCode) ? "en_US" : templateMeta!.LanguageCode;
+                var resolvedTemplateId = !string.IsNullOrWhiteSpace(templateMeta?.TemplateId)
+                    ? templateMeta!.TemplateId!
+                    : (!string.IsNullOrWhiteSpace(campaign.TemplateId) ? campaign.TemplateId! : templateName);
 
                 var recipients = await _db.CampaignRecipients
                     .AsNoTracking()
@@ -2429,13 +2761,69 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 int success = 0, fail = 0;
                 var successIds = new List<Guid>(recipients.Count);
                 var failedIds = new List<Guid>();
+                var messageLogs = new List<MessageLog>(recipients.Count);
                 var sendLogs = new List<CampaignSendLog>(recipients.Count);
 
                 foreach (var r in recipients)
                 {
+                    var contactId = r.ContactId ?? r.AudienceContactId;
+                    var messageLogId = Guid.NewGuid();
+
                     if (string.IsNullOrWhiteSpace(r.Phone))
                     {
+                        var missingPhoneBody = templateMeta?.Body ?? campaign.MessageTemplate ?? templateName;
+                        var missingPhoneSnapshot = BuildTemplateSnapshotJson(
+                            headerKind: templateMeta?.HeaderKind ?? (string.IsNullOrWhiteSpace(campaign.ImageUrl) ? "none" : "image"),
+                            headerText: templateMeta?.HeaderText,
+                            headerMediaUrl: campaign.ImageUrl,
+                            bodyText: missingPhoneBody,
+                            footerText: null,
+                            buttons: BuildButtonsSnapshot(templateMeta?.UrlButtons, new List<string>()));
+
+                        messageLogs.Add(new MessageLog
+                        {
+                            Id = messageLogId,
+                            BusinessId = businessId,
+                            ContactId = contactId,
+                            RecipientNumber = string.Empty,
+                            MessageContent = templateName,
+                            RenderedBody = missingPhoneBody,
+                            MediaUrl = campaign.ImageUrl,
+                            MessageKind = MessageKind.Template,
+                            TemplateName = templateName,
+                            TemplateLanguage = lang,
+                            TemplateSnapshotJson = missingPhoneSnapshot,
+                            Status = "Failed",
+                            ErrorMessage = "Recipient phone number is missing.",
+                            RawResponse = null,
+                            MessageId = null,
+                            Provider = provider,
+                            ProviderMessageId = null,
+                            CreatedAt = DateTime.UtcNow,
+                            SentAt = null,
+                            Source = "campaign",
+                            CampaignId = campaign.Id
+                        });
+
+                        sendLogs.Add(new CampaignSendLog
+                        {
+                            Id = Guid.NewGuid(),
+                            CampaignId = campaign.Id,
+                            ContactId = contactId,
+                            RecipientId = r.Id,
+                            MessageLogId = messageLogId,
+                            MessageBody = missingPhoneBody,
+                            TemplateId = resolvedTemplateId,
+                            MessageId = null,
+                            SendStatus = "Failed",
+                            ErrorMessage = "Recipient phone number is missing.",
+                            SentAt = null,
+                            CreatedBy = sentBy,
+                            BusinessId = businessId,
+                        });
+
                         failedIds.Add(r.Id);
+                        fail++;
                         continue;
                     }
 
@@ -2500,6 +2888,25 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                         }
                     }
 
+                    var resolvedBody = TemplateParameterHelper.FillPlaceholders(
+                        templateMeta?.Body ?? campaign.MessageTemplate ?? string.Empty,
+                        bodyParams.ToList());
+                    if (string.IsNullOrWhiteSpace(resolvedBody))
+                        resolvedBody = campaign.MessageTemplate ?? templateName;
+
+                    var snapshotButtons = BuildButtonsSnapshot(
+                        templateMeta?.UrlButtons,
+                        Enumerable.Range(1, 3)
+                            .Select(pos => buttonVars.TryGetValue($"button{pos}.url_param", out var v) ? v : string.Empty)
+                            .ToList());
+                    var snapshotJson = BuildTemplateSnapshotJson(
+                        headerKind: templateMeta?.HeaderKind ?? (string.IsNullOrWhiteSpace(headerImage) ? "none" : "image"),
+                        headerText: templateMeta?.HeaderText,
+                        headerMediaUrl: headerImage,
+                        bodyText: resolvedBody,
+                        footerText: null,
+                        buttons: snapshotButtons);
+
                     var payload = new
                     {
                         messaging_product = "whatsapp",
@@ -2514,25 +2921,58 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     };
 
                     var result = await SendPayloadAsync(businessId, provider, payload, phoneNumberId);
-                    if (result.Success) { success++; successIds.Add(r.Id); } else { fail++; failedIds.Add(r.Id); }
+                    messageLogs.Add(new MessageLog
+                    {
+                        Id = messageLogId,
+                        BusinessId = businessId,
+                        ContactId = contactId,
+                        RecipientNumber = r.Phone!,
+                        MessageContent = templateName,
+                        RenderedBody = resolvedBody,
+                        MediaUrl = headerImage,
+                        MessageKind = MessageKind.Template,
+                        TemplateName = templateName,
+                        TemplateLanguage = lang,
+                        TemplateSnapshotJson = snapshotJson,
+                        Status = result.Success ? "Sent" : "Failed",
+                        ErrorMessage = result.Success ? null : result.Message,
+                        RawResponse = result.RawResponse,
+                        MessageId = result.MessageId,
+                        Provider = provider,
+                        ProviderMessageId = result.MessageId,
+                        CreatedAt = DateTime.UtcNow,
+                        SentAt = result.Success ? DateTime.UtcNow : null,
+                        Source = "campaign",
+                        CampaignId = campaign.Id
+                    });
 
-                    var contactId = r.ContactId ?? r.AudienceContactId;
                     sendLogs.Add(new CampaignSendLog
                     {
                         Id = Guid.NewGuid(),
                         CampaignId = campaign.Id,
                         ContactId = contactId,
                         RecipientId = r.Id,
-                        MessageLogId = result?.LogId,
+                        MessageLogId = messageLogId,
+                        MessageBody = resolvedBody,
+                        TemplateId = resolvedTemplateId,
+                        MessageId = result.MessageId,
                         SendStatus = result.Success ? "Sent" : "Failed",
+                        ErrorMessage = result.Success ? null : result.Message,
                         SentAt = result.Success ? DateTime.UtcNow : (DateTime?)null,
                         CreatedBy = sentBy,
                         BusinessId = businessId,
                     });
+
+                    if (result.Success) { success++; successIds.Add(r.Id); } else { fail++; failedIds.Add(r.Id); }
                 }
+
+                if (messageLogs.Count > 0)
+                    await _db.MessageLogs.AddRangeAsync(messageLogs);
 
                 if (sendLogs.Count > 0)
                     await _db.CampaignSendLogs.AddRangeAsync(sendLogs);
+
+                await _db.SaveChangesAsync();
 
                 if (successIds.Count > 0)
                 {
@@ -2552,8 +2992,6 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                             .SetProperty(x => x.Status, _ => "Failed")
                             .SetProperty(x => x.UpdatedAt, _ => DateTime.UtcNow));
                 }
-
-                await _db.SaveChangesAsync();
 
                 await _db.Campaigns
                     .Where(c => c.Id == campaign.Id && c.BusinessId == businessId)
@@ -2605,19 +3043,38 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 if (validButtons == null || validButtons.Count == 0)
                     return ResponseResult.ErrorInfo("❌ At least one CTA button with a valid title is required.");
 
-                var payload = new
+                object payload;
+                if (string.IsNullOrWhiteSpace(dto.MediaUrl))
                 {
-                    messaging_product = "whatsapp",
-                    to = dto.RecipientNumber,
-                    type = "interactive",
-                    interactive = new
+                    payload = new
                     {
-                        type = "button",
-                        body = new { text = dto.TextContent },
-                        action = new { buttons = validButtons }
-                    },
-                    image = string.IsNullOrWhiteSpace(dto.MediaUrl) ? null : new { link = dto.MediaUrl }
-                };
+                        messaging_product = "whatsapp",
+                        to = dto.RecipientNumber,
+                        type = "interactive",
+                        interactive = new
+                        {
+                            type = "button",
+                            body = new { text = dto.TextContent },
+                            action = new { buttons = validButtons }
+                        }
+                    };
+                }
+                else
+                {
+                    payload = new
+                    {
+                        messaging_product = "whatsapp",
+                        to = dto.RecipientNumber,
+                        type = "interactive",
+                        interactive = new
+                        {
+                            type = "button",
+                            header = new { type = "image", image = new { link = dto.MediaUrl } },
+                            body = new { text = dto.TextContent },
+                            action = new { buttons = validButtons }
+                        }
+                    };
+                }
 
                 var sendResult = await SendViaProviderAsync(
                     dto.BusinessId,
@@ -2660,9 +3117,12 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     RawResponse = sendResult.RawResponse,
                     MessageId = messageId,
                     CreatedAt = DateTime.UtcNow,
-                    SentAt = DateTime.UtcNow,
+                    SentAt = sendResult.Success ? DateTime.UtcNow : null,
                     CTAFlowConfigId = dto.CTAFlowConfigId,
                     CTAFlowStepId = dto.CTAFlowStepId,
+                    Provider = dto.Provider,
+                    ProviderMessageId = messageId,
+                    MessageKind = MessageKind.Media
                 };
 
                 await _db.MessageLogs.AddAsync(log);
@@ -2703,6 +3163,8 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     CreatedAt = DateTime.UtcNow,
                     CTAFlowConfigId = dto.CTAFlowConfigId,
                     CTAFlowStepId = dto.CTAFlowStepId,
+                    Provider = dto.Provider,
+                    MessageKind = MessageKind.Media
                 });
 
                 await _db.SaveChangesAsync();
@@ -2781,6 +3243,13 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                 var renderedBody = TemplateParameterHelper.FillPlaceholders(
                     dto.TemplateBody ?? "",
                     dto.TemplateParameters ?? new List<string>());
+                var snapshotJson = BuildTemplateSnapshotJson(
+                    headerKind: "image",
+                    headerText: null,
+                    headerMediaUrl: dto.HeaderImageUrl,
+                    bodyText: renderedBody,
+                    footerText: null,
+                    buttons: new List<object>());
 
                 var log = new MessageLog
                 {
@@ -2790,12 +3259,19 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     MessageContent = dto.TemplateName,
                     MediaUrl = dto.HeaderImageUrl,
                     RenderedBody = renderedBody,
+                    MessageKind = MessageKind.Template,
+                    TemplateName = dto.TemplateName,
+                    TemplateLanguage = lang,
+                    TemplateSnapshotJson = snapshotJson,
                     Status = sendResult.Success ? "Sent" : "Failed",
                     ErrorMessage = sendResult.Success ? null : sendResult.Message,
                     RawResponse = sendResult.RawResponse,
                     MessageId = sendResult.MessageId,
+                    Provider = dto.Provider,
+                    ProviderMessageId = sendResult.MessageId,
                     CreatedAt = DateTime.UtcNow,
-                    SentAt = DateTime.UtcNow,
+                    SentAt = sendResult.Success ? DateTime.UtcNow : null,
+                    Source = "direct",
                     CTAFlowConfigId = dto.CTAFlowConfigId,
                     CTAFlowStepId = dto.CTAFlowStepId,
                 };
@@ -2825,10 +3301,22 @@ namespace xbytechat.api.Features.MessagesEngine.Services
                     MessageContent = dto.TemplateName,
                     RenderedBody = TemplateParameterHelper.FillPlaceholders(dto.TemplateBody ?? "", dto.TemplateParameters ?? new List<string>()),
                     MediaUrl = dto.HeaderImageUrl,
+                    MessageKind = MessageKind.Template,
+                    TemplateName = dto.TemplateName,
+                    TemplateLanguage = string.IsNullOrWhiteSpace(dto.LanguageCode) ? "en_US" : dto.LanguageCode,
+                    TemplateSnapshotJson = BuildTemplateSnapshotJson(
+                        headerKind: "image",
+                        headerText: null,
+                        headerMediaUrl: dto.HeaderImageUrl,
+                        bodyText: TemplateParameterHelper.FillPlaceholders(dto.TemplateBody ?? "", dto.TemplateParameters ?? new List<string>()),
+                        footerText: null,
+                        buttons: new List<object>()),
                     Status = "Failed",
                     ErrorMessage = ex.Message,
                     RawResponse = ex.ToString(),
+                    Provider = dto.Provider,
                     CreatedAt = DateTime.UtcNow,
+                    Source = "direct",
                     CTAFlowConfigId = dto.CTAFlowConfigId,
                     CTAFlowStepId = dto.CTAFlowStepId,
                 });

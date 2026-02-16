@@ -28,7 +28,8 @@ namespace xbytechat.api.WhatsAppSettings.Providers
                 return items;
 
             var baseUrl = s.ApiUrl?.TrimEnd('/') ?? "https://graph.facebook.com/v22.0";
-            var next = $"{baseUrl}/{s.WabaId}/message_templates?limit=100";
+            var fields = Uri.EscapeDataString("id,name,language,status,category,sub_category,components,last_updated_time");
+            var next = $"{baseUrl}/{s.WabaId}/message_templates?limit=100&fields={fields}";
 
             _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", s.ApiKey);
 

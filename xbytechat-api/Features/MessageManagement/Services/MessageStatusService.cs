@@ -8,6 +8,7 @@ using xbytechat.api.Features.CampaignModule.Models;
 using xbytechat.api.Models.BusinessModel;
 using xbytechat.api.AuthModule.Models;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace xbytechat.api.Features.MessageManagement.Services
 {
@@ -26,13 +27,27 @@ namespace xbytechat.api.Features.MessageManagement.Services
         {
             foreach (var status in dto.statuses)
             {
+                var messageId = string.IsNullOrWhiteSpace(status.id) ? null : status.id.Trim();
+                var normalizedStatus = (status.status ?? string.Empty).Trim().ToLowerInvariant();
+                var metaTimestamp = status.timestamp;
+
+                if (!string.IsNullOrWhiteSpace(messageId))
+                {
+                    var exists = await _context.MessageStatusLogs.AsNoTracking().AnyAsync(x =>
+                        x.MessageId == messageId &&
+                        x.Status == normalizedStatus &&
+                        x.MetaTimestamp == metaTimestamp);
+
+                    if (exists) continue;
+                }
+
                 var log = new MessageStatusLog
                 {
                     Id = Guid.NewGuid(),
-                    MessageId = status.id,
-                    Status = status.status.ToLower(),
+                    MessageId = messageId,
+                    Status = normalizedStatus,
                     RecipientNumber = status.recipient_id,
-                    MetaTimestamp = status.timestamp,
+                    MetaTimestamp = metaTimestamp,
                     TemplateCategory = status?.pricing?.category,
                     MessageType = status?.conversation?.origin?.type ?? "session",
                     Channel = "whatsapp",
@@ -62,6 +77,10 @@ namespace xbytechat.api.Features.MessageManagement.Services
             try
             {
                 await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateException ex) when (ex.InnerException is PostgresException pg && pg.SqlState == PostgresErrorCodes.UniqueViolation)
+            {
+                _logger.LogInformation("↩️ Duplicate status webhook rows ignored by DB idempotency guard.");
             }
             catch (Exception ex)
             {

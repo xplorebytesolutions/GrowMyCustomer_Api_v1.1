@@ -199,6 +199,13 @@ namespace xbytechat.api.Features.CampaignModule.SendEngine
                 // For Template messages, handles must be passed in the "id" field
                 return new MetaMediaLink(Id: identifier);
             }
+
+            if (url.StartsWith("id:", StringComparison.OrdinalIgnoreCase))
+            {
+                var identifier = url.Substring(3);
+                _log.LogInformation("MetaMapper: Mapping media id: {Identifier}", identifier);
+                return new MetaMediaLink(Id: identifier);
+            }
             
             _log.LogInformation("MetaMapper: Mapping media URL: {Url}", url);
             return new MetaMediaLink(Link: url);

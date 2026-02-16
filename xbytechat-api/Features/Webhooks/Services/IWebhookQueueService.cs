@@ -5,7 +5,7 @@ namespace xbytechat.api.Features.Webhooks.Services
 {
     public interface IWebhookQueueService
     {
-        void Enqueue(JsonElement payload);
+        bool Enqueue(JsonElement payload);
         ValueTask<JsonElement> DequeueAsync(CancellationToken cancellationToken);
         int GetQueueLength();
     }

@@ -103,7 +103,7 @@ namespace xbytechat.api.Features.MessagesEngine.Controllers
 
                 return result.Success
                     ? Ok(result)
-                    : BadRequest(ResponseResult.ErrorInfo(result.Message ?? "❌ Failed to send template.", result.RawResponse));
+                    : BadRequest(result);
             }
             catch (Exception ex)
             {

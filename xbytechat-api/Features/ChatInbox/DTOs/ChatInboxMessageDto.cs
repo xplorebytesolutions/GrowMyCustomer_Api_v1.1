@@ -66,5 +66,11 @@ namespace xbytechat.api.Features.ChatInbox.DTOs
         /// For failed messages, a short error string from MessageLog.ErrorMessage.
         /// </summary>
         public string? ErrorMessage { get; set; }
+
+        // Phase 2: deterministic template rendering metadata (message-level only)
+        public string? MessageKind { get; set; }
+        public string? TemplateName { get; set; }
+        public string? TemplateLanguage { get; set; }
+        public string? TemplateSnapshotJson { get; set; }
     }
 }

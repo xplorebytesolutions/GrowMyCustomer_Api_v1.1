@@ -13,36 +13,37 @@ namespace xbytechat.api.Features.Inbox.Services
             _db = db;
         }
 
-        // ✅ Returns current chat mode: "agent" or "auto"
+        // ✅ Returns current chat mode: "agent" or "automation"
         public async Task<string> GetChatModeAsync(Guid businessId, Guid contactId)
         {
             var session = await _db.ChatSessionStates
                 .FirstOrDefaultAsync(s => s.BusinessId == businessId && s.ContactId == contactId);
 
-            return session?.Mode ?? "auto"; // Default to auto
+            return ChatSessionState.NormalizeMode(session?.Mode);
         }
 
         // ✅ Switches to agent mode
         public async Task SwitchToAgentModeAsync(Guid businessId, Guid contactId)
         {
-            await UpsertChatModeAsync(businessId, contactId, "agent");
+            await UpsertChatModeAsync(businessId, contactId, ChatSessionState.ModeAgent);
         }
 
         // ✅ Switches to automation mode
         public async Task SwitchToAutomationModeAsync(Guid businessId, Guid contactId)
         {
-            await UpsertChatModeAsync(businessId, contactId, "auto");
+            await UpsertChatModeAsync(businessId, contactId, ChatSessionState.ModeAutomation);
         }
 
         // ✅ Shared logic to insert or update session state
         private async Task UpsertChatModeAsync(Guid businessId, Guid contactId, string mode)
         {
+            var normalized = ChatSessionState.NormalizeMode(mode);
             var existing = await _db.ChatSessionStates
                 .FirstOrDefaultAsync(s => s.BusinessId == businessId && s.ContactId == contactId);
 
             if (existing != null)
             {
-                existing.Mode = mode;
+                existing.Mode = normalized;
                 existing.LastUpdatedAt = DateTime.UtcNow;
             }
             else
@@ -51,7 +52,7 @@ namespace xbytechat.api.Features.Inbox.Services
                 {
                     BusinessId = businessId,
                     ContactId = contactId,
-                    Mode = mode,
+                    Mode = normalized,
                     LastUpdatedAt = DateTime.UtcNow
                 });
             }
@@ -61,6 +62,7 @@ namespace xbytechat.api.Features.Inbox.Services
 
         public async Task SetChatModeAsync(Guid businessId, Guid contactId, string mode)
         {
+            var normalized = ChatSessionState.NormalizeMode(mode);
             var state = await _db.ChatSessionStates
                 .FirstOrDefaultAsync(x => x.BusinessId == businessId && x.ContactId == contactId);
 
@@ -72,14 +74,14 @@ namespace xbytechat.api.Features.Inbox.Services
                     Id = Guid.NewGuid(),
                     BusinessId = businessId,
                     ContactId = contactId,
-                    Mode = mode,
+                    Mode = normalized,
                     LastUpdatedAt = DateTime.UtcNow
                 };
                 _db.ChatSessionStates.Add(state);
             }
             else
             {
-                state.Mode = mode;
+                state.Mode = normalized;
                 state.LastUpdatedAt = DateTime.UtcNow;
             }
 

@@ -1,5 +1,6 @@
 ﻿// 📄 xbytechat-api/Features/ChatInbox/DTOs/ChatInboxSendMessageRequestDto.cs
 using System;
+using System.Collections.Generic;
 
 namespace xbytechat.api.Features.ChatInbox.DTOs
 {
@@ -19,6 +20,11 @@ namespace xbytechat.api.Features.ChatInbox.DTOs
         public string To { get; set; } = string.Empty;
 
         public string? NumberId { get; set; }
+
+        /// <summary>
+        /// "freeform" | "template". Defaults to freeform for backward compatibility.
+        /// </summary>
+        public string? SendMode { get; set; }
 
         /// <summary>
         /// Optional for media messages. Required when sending plain text.
@@ -55,6 +61,17 @@ namespace xbytechat.api.Features.ChatInbox.DTOs
         public double? LocationLongitude { get; set; }
         public string? LocationName { get; set; }
         public string? LocationAddress { get; set; }
+
+        // Template send payload (used when SendMode == "template")
+        public string? TemplateName { get; set; }
+        public string? TemplateLanguage { get; set; }
+        public List<string>? Parameters { get; set; }
+        public List<string>? TemplateParameters { get; set; }
+        public Dictionary<string, string>? ParametersByKey { get; set; }
+        public string? TemplateHeaderKind { get; set; }
+        public string? HeaderMediaUrl { get; set; }
+        public string? TemplateBody { get; set; }
+        public List<string>? UrlButtonParams { get; set; }
 
         /// <summary>
         /// Server-side only (claims). Controller will overwrite it.

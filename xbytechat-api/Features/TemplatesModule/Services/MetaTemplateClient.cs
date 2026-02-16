@@ -1,5 +1,6 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.Http.Headers;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -31,9 +32,21 @@ public sealed class MetaTemplateClient : IMetaTemplateClient
     public async Task<string> UploadMediaAsync(Guid businessId, string localPathOrUrl, string mediaType, CancellationToken ct = default)
     {
         // For template headers, Meta requires an "asset handle" (aka header_handle).
+        var raw = (localPathOrUrl ?? string.Empty).Trim();
+        if (raw.StartsWith("handle:", StringComparison.OrdinalIgnoreCase))
+            raw = raw.Substring("handle:".Length);
+
+        if (string.IsNullOrWhiteSpace(raw))
+            throw new InvalidOperationException("Header media handle is empty. Please upload media again.");
+
+        // Guard against legacy numeric media IDs (from /media) being used as header_handle.
+        if (raw.All(char.IsDigit))
+            throw new InvalidOperationException(
+                "The stored media reference is a media ID, not a template header handle. Please re-upload header media.");
+
         // If the caller passes an already-generated handle, accept it.
-        if (localPathOrUrl.StartsWith("handle:", StringComparison.OrdinalIgnoreCase))
-            return localPathOrUrl.Substring("handle:".Length);
+        if (raw.Contains(':') || raw.Length >= 24)
+            return raw;
 
         // Otherwise, we expect the caller to have performed the Resumable Upload flow.
         throw new NotSupportedException(
@@ -176,7 +189,7 @@ public sealed class MetaTemplateClient : IMetaTemplateClient
 
    
 
-    // ───────────────────────── helpers ─────────────────────────
+    // ------------------------- helpers -------------------------
 
     private static string ExtractMetaError(string responseBody, int statusCode)
     {
@@ -254,3 +267,4 @@ public sealed class MetaTemplateClient : IMetaTemplateClient
     }
 
 }
+

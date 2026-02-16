@@ -611,6 +611,12 @@ namespace xbytechat.api
                 e.HasIndex(x => new { x.BusinessId, x.Origin, x.AutoReplyFlowId })
                  .HasDatabaseName("ix_flowexec_biz_origin_autoreply");
 
+                // Hard idempotency for inbound click webhook replays.
+                e.HasIndex(x => new { x.BusinessId, x.ProviderEventId })
+                 .HasDatabaseName("UX_FlowExecutionLogs_Business_ProviderEventId")
+                 .IsUnique()
+                 .HasFilter("\"ProviderEventId\" IS NOT NULL");
+
                 // tie logs to Flow and cascade on delete
                 e.HasOne<CTAFlowConfig>()
                  .WithMany()
@@ -649,9 +655,10 @@ namespace xbytechat.api
                 e.HasIndex(x => new { x.BusinessId, x.CreatedAt })
                  .HasDatabaseName("IX_MessageLogs_BizCreatedAt");
 
-                // Join from billing by provider message id
+                // Join from billing by provider message id + hard inbound idempotency.
                 e.HasIndex(x => new { x.BusinessId, x.ProviderMessageId })
                  .HasDatabaseName("IX_MessageLogs_BizProviderMessage")
+                 .IsUnique()
                  .HasFilter("\"ProviderMessageId\" IS NOT NULL");
 
                 // Conversation aggregation / backfills
@@ -685,6 +692,12 @@ namespace xbytechat.api
             modelBuilder.Entity<MessageStatusLog>(e =>
             {
                 e.HasKey(x => x.Id);
+
+                // Hard idempotency for duplicated status webhooks (legacy status endpoint path).
+                e.HasIndex(x => new { x.MessageId, x.Status, x.MetaTimestamp })
+                 .HasDatabaseName("UX_MessageStatusLogs_Message_Status_Timestamp")
+                 .IsUnique()
+                 .HasFilter("\"MessageId\" IS NOT NULL");
 
                 e.HasOne(ms => ms.Campaign)          // ✅ use nav
                  .WithMany(c => c.MessageStatusLogs) // or .WithMany() if Campaign doesn't expose the collection
@@ -1289,6 +1302,13 @@ namespace xbytechat.api
             //MessageLog (speed: inbox list + message fetch)
             modelBuilder.Entity<MessageLog>(e =>
             {
+                e.Property(x => x.MessageKind)
+                    .HasConversion<string>()
+                    .HasMaxLength(32);
+                e.Property(x => x.TemplateSnapshotJson).HasColumnType("text");
+                e.Property(x => x.TemplateName).HasMaxLength(160);
+                e.Property(x => x.TemplateLanguage).HasMaxLength(16);
+
                 e.HasIndex(x => new { x.BusinessId, x.ContactId, x.CreatedAt });
 
                 // Helps unread count query (filters IsIncoming)

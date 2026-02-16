@@ -1,9 +1,10 @@
-﻿// 📄 File: Features/Webhooks/Controllers/WebhookCallbackController.cs
+// ?? File: Features/Webhooks/Controllers/WebhookCallbackController.cs
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Text.Json;
 using System.Threading;
+using xbytechat.api.Features.Webhooks.DTOs;
 using xbytechat.api.Features.Webhooks.Services;
 
 namespace xbytechat.api.Features.Webhooks.Controllers
@@ -14,20 +15,23 @@ namespace xbytechat.api.Features.Webhooks.Controllers
     {
         private readonly ILogger<WebhookCallbackController> _logger;
         private readonly IWebhookQueueService _queue;
+        private readonly IFailedWebhookLogService _failedWebhookLogService;
 
         public WebhookCallbackController(
             ILogger<WebhookCallbackController> logger,
-            IWebhookQueueService queue)
+            IWebhookQueueService queue,
+            IFailedWebhookLogService failedWebhookLogService)
         {
             _logger = logger;
             _queue = queue;
+            _failedWebhookLogService = failedWebhookLogService;
         }
 
-        // ✅ Single POST endpoint: Pinnacle (and others) send responses here
+        // ? Single POST endpoint: Pinnacle (and others) send responses here
         [HttpPost]
         [Consumes("application/json")]
         [Produces("application/json")]
-        public IActionResult Post([FromBody] JsonElement payload, CancellationToken ct)
+        public async Task<IActionResult> Post([FromBody] JsonElement payload, CancellationToken ct)
         {
             if (!Request.HasJsonContentType())
             {
@@ -37,23 +41,36 @@ namespace xbytechat.api.Features.Webhooks.Controllers
             try
             {
                 var raw = payload.GetRawText();
-                _logger.LogInformation("📥 Webhook received. bytes={Len}", raw.Length);
+                _logger.LogInformation("?? Webhook received. bytes={Len}", raw.Length);
 
                 // Clone JsonElement before queueing
-                _queue.Enqueue(payload.Clone());
+                var enqueued = _queue.Enqueue(payload.Clone());
+                if (!enqueued)
+                {
+                    await _failedWebhookLogService.LogFailureAsync(new FailedWebhookLogDto
+                    {
+                        FailureType = "QueueOverload",
+                        SourceModule = nameof(WebhookCallbackController),
+                        ErrorMessage = "Webhook queue full; payload dropped.",
+                        RawJson = raw,
+                        CreatedAt = DateTime.UtcNow
+                    });
 
-                // Return 200 OK so Pinnacle won’t retry unnecessarily
+                    _logger.LogWarning("Queue overload in {Controller}. Payload persisted to FailedWebhookLogs.", nameof(WebhookCallbackController));
+                    return Ok(new { received = true });
+                }
+
+                // Return 200 OK so provider won�t retry unnecessarily
                 return Ok(new { received = true });
             }
             catch (OperationCanceledException)
             {
-                _logger.LogWarning("⚠️ Webhook processing cancelled by client.");
+                _logger.LogWarning("?? Webhook processing cancelled by client.");
                 return StatusCode(499);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Failed to enqueue webhook payload.");
-                // 500 lets BSP retry later
+                _logger.LogError(ex, "? Failed to enqueue webhook payload.");
                 return StatusCode(500, new { error = "webhook_enqueue_failed" });
             }
         }

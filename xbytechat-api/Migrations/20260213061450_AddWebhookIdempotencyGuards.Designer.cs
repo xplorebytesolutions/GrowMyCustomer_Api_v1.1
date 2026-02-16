@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using xbytechat.api;
@@ -11,9 +12,11 @@ using xbytechat.api;
 namespace xbytechat.api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260213061450_AddWebhookIdempotencyGuards")]
+    partial class AddWebhookIdempotencyGuards
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -131,10 +134,6 @@ namespace xbytechat.api.Migrations
                     b.Property<string>("MessageId")
                         .HasColumnType("text");
 
-                    b.Property<string>("MessageKind")
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)");
-
                     b.Property<DateTime?>("MessageTime")
                         .ValueGeneratedOnAddOrUpdate()
                         .HasColumnType("timestamp with time zone")
@@ -179,17 +178,6 @@ namespace xbytechat.api.Migrations
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("TemplateLanguage")
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)");
-
-                    b.Property<string>("TemplateName")
-                        .HasMaxLength(160)
-                        .HasColumnType("character varying(160)");
-
-                    b.Property<string>("TemplateSnapshotJson")
                         .HasColumnType("text");
 
                     b.HasKey("Id");

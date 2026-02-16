@@ -45,8 +45,8 @@ namespace xbytechat.api.Features.CampaignModule.SendEngine.Services
             {
                 if (string.IsNullOrWhiteSpace(envelope.HeaderUrl))
                     vr.Error("header.url", $"HeaderKind={plan.HeaderKind} requires a non-empty HeaderUrl.");
-                else if (!LooksLikeAbsoluteUrl(envelope.HeaderUrl!))
-                    vr.Error("header.url", "HeaderUrl must be absolute http/https URL (or wa/tel where supported).");
+                else if (!IsValidHeaderReference(plan.Provider, envelope.HeaderUrl!))
+                    vr.Error("header.url", "HeaderUrl must be absolute http/https URL (or Meta handle:/id: reference for Meta Cloud).");
             }
 
             // ---- RECIPIENT ----
@@ -115,6 +115,21 @@ namespace xbytechat.api.Features.CampaignModule.SendEngine.Services
             return Uri.TryCreate(s, UriKind.Absolute, out var uri) &&
                    (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
                     uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsValidHeaderReference(Provider provider, string value)
+        {
+            if (LooksLikeAbsoluteUrl(value)) return true;
+
+            if (provider == Provider.MetaCloud)
+            {
+                if (value.StartsWith("handle:", StringComparison.OrdinalIgnoreCase))
+                    return value.Length > "handle:".Length;
+                if (value.StartsWith("id:", StringComparison.OrdinalIgnoreCase))
+                    return value.Length > "id:".Length;
+            }
+
+            return false;
         }
 
         private static bool IsLikelyPhone(string? s)

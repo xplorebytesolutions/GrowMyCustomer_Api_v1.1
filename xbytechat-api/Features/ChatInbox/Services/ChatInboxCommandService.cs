@@ -1,6 +1,8 @@
 ﻿// 📄 xbytechat-api/Features/ChatInbox/Services/ChatInboxCommandService.cs
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
@@ -10,6 +12,7 @@ using xbytechat.api.Features.ChatInbox.DTOs;
 using xbytechat.api.Features.CRM.Models;               // Contact
 using xbytechat.api.Features.Inbox.Models;
 using xbytechat.api.Features.MessagesEngine.DTOs;
+using xbytechat.api.Features.MessagesEngine.Enums;
 using xbytechat.api.Features.MessagesEngine.Services;
 using xbytechat.api.Helpers;
 using xbytechat.api.Models;                            // AppDbContext, MessageLog
@@ -31,6 +34,8 @@ namespace xbytechat.api.Features.ChatInbox.Services
     public sealed class ChatInboxCommandService : IChatInboxCommandService
     {
         private const string InboxAssignPermissionCode = "INBOX.CHAT.ASSIGN";
+        private const string SendModeFreeform = "freeform";
+        private const string SendModeTemplate = "template";
 
         private readonly AppDbContext _db;
         private readonly IMessageEngineService _messageEngine;
@@ -57,6 +62,7 @@ namespace xbytechat.api.Features.ChatInbox.Services
             if (string.IsNullOrWhiteSpace(request.To))
                 throw new ArgumentException("Target phone (To) is required.", nameof(request));
 
+            var sendMode = NormalizeSendMode(request.SendMode);
             var text = string.IsNullOrWhiteSpace(request.Text) ? null : request.Text.Trim();
             var mediaId = string.IsNullOrWhiteSpace(request.MediaId) ? null : request.MediaId.Trim();
             var mediaType = string.IsNullOrWhiteSpace(request.MediaType) ? null : request.MediaType.Trim().ToLowerInvariant();
@@ -65,24 +71,35 @@ namespace xbytechat.api.Features.ChatInbox.Services
             var hasText = !string.IsNullOrWhiteSpace(text);
             var hasMedia = !string.IsNullOrWhiteSpace(mediaId);
 
-            if (!hasText && !hasMedia && !hasLocation)
-                throw new ArgumentException("Either Text, MediaId, or Location is required.", nameof(request));
-
-            if (hasMedia && mediaType is not ("image" or "document" or "video" or "audio"))
-                throw new ArgumentException("MediaType must be 'image', 'document', 'video', or 'audio'.", nameof(request));
-
-            if (hasMedia && mediaType == "audio" && hasText)
-                throw new ArgumentException("Audio messages do not support captions. Please remove Text.", nameof(request));
-
-            if (hasLocation && (hasMedia || hasText))
-                throw new ArgumentException("Location messages cannot include Text or MediaId.", nameof(request));
-
-            if (hasLocation)
+            if (sendMode == SendModeTemplate)
             {
-                var lat = request.LocationLatitude!.Value;
-                var lon = request.LocationLongitude!.Value;
-                if (lat < -90 || lat > 90) throw new ArgumentException("LocationLatitude must be between -90 and 90.", nameof(request));
-                if (lon < -180 || lon > 180) throw new ArgumentException("LocationLongitude must be between -180 and 180.", nameof(request));
+                if (string.IsNullOrWhiteSpace(request.TemplateName))
+                    throw new ArgumentException("TemplateName is required when SendMode=template.", nameof(request));
+
+                if (hasMedia || hasLocation)
+                    throw new ArgumentException("Template mode cannot include MediaId, MediaType, or Location fields.", nameof(request));
+            }
+            else
+            {
+                if (!hasText && !hasMedia && !hasLocation)
+                    throw new ArgumentException("Either Text, MediaId, or Location is required.", nameof(request));
+
+                if (hasMedia && mediaType is not ("image" or "document" or "video" or "audio"))
+                    throw new ArgumentException("MediaType must be 'image', 'document', 'video', or 'audio'.", nameof(request));
+
+                if (hasMedia && mediaType == "audio" && hasText)
+                    throw new ArgumentException("Audio messages do not support captions. Please remove Text.", nameof(request));
+
+                if (hasLocation && (hasMedia || hasText))
+                    throw new ArgumentException("Location messages cannot include Text or MediaId.", nameof(request));
+
+                if (hasLocation)
+                {
+                    var lat = request.LocationLatitude!.Value;
+                    var lon = request.LocationLongitude!.Value;
+                    if (lat < -90 || lat > 90) throw new ArgumentException("LocationLatitude must be between -90 and 90.", nameof(request));
+                    if (lon < -180 || lon > 180) throw new ArgumentException("LocationLongitude must be between -180 and 180.", nameof(request));
+                }
             }
 
             var businessId = request.BusinessId;
@@ -102,21 +119,76 @@ namespace xbytechat.api.Features.ChatInbox.Services
             await EnforceAssignedOnlyReplyAsync(actor, contact, ct).ConfigureAwait(false);
 
             // 📨 Send via MessagesEngine
-            var result =
-                hasMedia
-                    ? await SendMediaAsync(businessId, phone, contact.Id, request, mediaId!, mediaType!, text).ConfigureAwait(false)
-                    : hasLocation
-                        ? await SendLocationAsync(businessId, phone, contact.Id, request).ConfigureAwait(false)
-                        : await _messageEngine.SendTextDirectAsync(new TextMessageSendDto
-                        {
-                            BusinessId = businessId,
-                            RecipientNumber = phone,
-                            TextContent = text!,
-                            ContactId = contact.Id,
-                            PhoneNumberId = string.IsNullOrWhiteSpace(request.NumberId) ? null : request.NumberId.Trim(),
-                            Provider = null,
-                            Source = "agent"
-                        }).ConfigureAwait(false);
+            ResponseResult result;
+            string? templateName = null;
+            string? templateLanguage = null;
+            string? templateHeaderKind = null;
+            string? headerMediaUrl = null;
+            string? templateBody = null;
+            List<string> templateParameters = new();
+            List<string> urlButtonParams = new();
+
+            if (sendMode == SendModeTemplate)
+            {
+                templateName = request.TemplateName?.Trim();
+                templateLanguage = string.IsNullOrWhiteSpace(request.TemplateLanguage) ? "en_US" : request.TemplateLanguage.Trim();
+                templateHeaderKind = NormalizeTemplateHeaderKind(request.TemplateHeaderKind);
+                headerMediaUrl = string.IsNullOrWhiteSpace(request.HeaderMediaUrl) ? null : request.HeaderMediaUrl.Trim();
+                templateBody = string.IsNullOrWhiteSpace(request.TemplateBody) ? null : request.TemplateBody;
+                templateParameters = ResolveTemplateParameters(request);
+                urlButtonParams = (request.UrlButtonParams ?? new List<string>())
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Select(x => x.Trim())
+                    .ToList();
+
+                result = await SendTemplateAsync(
+                        businessId,
+                        phone,
+                        contact.Id,
+                        request,
+                        templateName!,
+                        templateLanguage,
+                        templateHeaderKind,
+                        headerMediaUrl,
+                        templateBody,
+                        templateParameters,
+                        urlButtonParams)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                result =
+                    hasMedia
+                        ? await SendMediaAsync(businessId, phone, contact.Id, request, mediaId!, mediaType!, text).ConfigureAwait(false)
+                        : hasLocation
+                            ? await SendLocationAsync(businessId, phone, contact.Id, request).ConfigureAwait(false)
+                            : await _messageEngine.SendTextDirectAsync(new TextMessageSendDto
+                            {
+                                BusinessId = businessId,
+                                RecipientNumber = phone,
+                                TextContent = text!,
+                                ContactId = contact.Id,
+                                PhoneNumberId = string.IsNullOrWhiteSpace(request.NumberId) ? null : request.NumberId.Trim(),
+                                Provider = null,
+                                Source = "agent"
+                            }).ConfigureAwait(false);
+            }
+
+            if (sendMode == SendModeTemplate)
+            {
+                await EnsureTemplateLogForInboxAsync(
+                        result.LogId,
+                        contact.Id,
+                        templateName!,
+                        templateLanguage!,
+                        templateBody,
+                        templateHeaderKind,
+                        headerMediaUrl,
+                        templateParameters,
+                        urlButtonParams,
+                        ct)
+                    .ConfigureAwait(false);
+            }
 
             // Load log for richer bubble
             MessageLog? log = null;
@@ -134,13 +206,24 @@ namespace xbytechat.api.Features.ChatInbox.Services
             await _db.SaveChangesAsync(ct).ConfigureAwait(false);
 
             var bubbleId = log?.Id ?? Guid.NewGuid();
-            var bubbleText = log?.MessageContent ?? (text ?? string.Empty);
+            var fallbackTemplateText = sendMode == SendModeTemplate
+                ? (RenderTemplateBody(templateBody, templateParameters) ?? templateName ?? string.Empty)
+                : string.Empty;
+            var bubbleText = log?.RenderedBody ?? log?.MessageContent ?? (text ?? fallbackTemplateText);
 
             var ts = log?.SentAt ?? log?.CreatedAt ?? nowUtc;
             var sentAtUtc = ts.Kind == DateTimeKind.Utc ? ts : ts.ToUniversalTime();
 
             var status = log?.Status ?? (result.Success ? "Sent" : "Failed");
             var err = log?.ErrorMessage ?? (result.Success ? null : result.Message);
+
+            var fallbackMessageKind = sendMode == SendModeTemplate
+                ? MessageKind.Template.ToString()
+                : hasLocation
+                    ? MessageKind.Location.ToString()
+                    : hasMedia
+                        ? MessageKind.Media.ToString()
+                        : MessageKind.FreeformText.ToString();
 
             return new ChatInboxMessageDto
             {
@@ -158,8 +241,181 @@ namespace xbytechat.api.Features.ChatInbox.Services
                 LocationAddress = log?.LocationAddress,
                 SentAtUtc = sentAtUtc,
                 Status = status,
-                ErrorMessage = err
+                ErrorMessage = err,
+                MessageKind = log?.MessageKind?.ToString() ?? fallbackMessageKind,
+                TemplateName = log?.TemplateName ?? (sendMode == SendModeTemplate ? templateName : null),
+                TemplateLanguage = log?.TemplateLanguage ?? (sendMode == SendModeTemplate ? templateLanguage : null),
+                TemplateSnapshotJson = log?.TemplateSnapshotJson
             };
+        }
+
+        private static string NormalizeSendMode(string? sendMode)
+        {
+            var raw = (sendMode ?? string.Empty).Trim().ToLowerInvariant();
+            return raw == SendModeTemplate ? SendModeTemplate : SendModeFreeform;
+        }
+
+        private static string NormalizeTemplateHeaderKind(string? headerKind)
+        {
+            var raw = (headerKind ?? string.Empty).Trim().ToLowerInvariant();
+            return raw is "image" or "video" or "document" or "text" ? raw : "none";
+        }
+
+        private static List<string> ResolveTemplateParameters(ChatInboxSendMessageRequestDto request)
+        {
+            if (request.Parameters is { Count: > 0 })
+            {
+                return request.Parameters.Select(x => x ?? string.Empty).ToList();
+            }
+
+            if (request.TemplateParameters is { Count: > 0 })
+            {
+                return request.TemplateParameters.Select(x => x ?? string.Empty).ToList();
+            }
+
+            if (request.ParametersByKey is { Count: > 0 })
+            {
+                return request.ParametersByKey
+                    .OrderBy(kvp =>
+                    {
+                        var key = (kvp.Key ?? string.Empty).Trim();
+                        return int.TryParse(key, out var n) ? n : int.MaxValue;
+                    })
+                    .ThenBy(kvp => kvp.Key)
+                    .Select(kvp => kvp.Value ?? string.Empty)
+                    .ToList();
+            }
+
+            return new List<string>();
+        }
+
+        private async Task<ResponseResult> SendTemplateAsync(
+            Guid businessId,
+            string to,
+            Guid contactId,
+            ChatInboxSendMessageRequestDto request,
+            string templateName,
+            string templateLanguage,
+            string templateHeaderKind,
+            string? headerMediaUrl,
+            string? templateBody,
+            List<string> templateParameters,
+            List<string> urlButtonParams)
+        {
+            if (templateHeaderKind is "image" or "video" or "document")
+            {
+                if (string.IsNullOrWhiteSpace(headerMediaUrl))
+                {
+                    throw new ArgumentException(
+                        $"HeaderMediaUrl is required for template header kind '{templateHeaderKind}'.",
+                        nameof(request));
+                }
+            }
+
+            var dto = new SimpleTemplateMessageDto
+            {
+                RecipientNumber = to,
+                TemplateName = templateName,
+                TemplateParameters = templateParameters,
+                HeaderKind = templateHeaderKind,
+                HeaderMediaUrl = headerMediaUrl,
+                UrlButtonParams = urlButtonParams,
+                Provider = string.Empty,
+                PhoneNumberId = string.IsNullOrWhiteSpace(request.NumberId) ? null : request.NumberId.Trim(),
+                TemplateBody = templateBody,
+                LanguageCode = templateLanguage,
+                DeliveryMode = DeliveryMode.Immediate
+            };
+
+            return await _messageEngine
+                .SendTemplateMessageSimpleAsync(businessId, dto)
+                .ConfigureAwait(false);
+        }
+
+        private async Task EnsureTemplateLogForInboxAsync(
+            Guid? logId,
+            Guid contactId,
+            string templateName,
+            string templateLanguage,
+            string? templateBody,
+            string templateHeaderKind,
+            string? headerMediaUrl,
+            IReadOnlyList<string> templateParameters,
+            IReadOnlyList<string> urlButtonParams,
+            CancellationToken ct)
+        {
+            if (!logId.HasValue || logId.Value == Guid.Empty) return;
+
+            var log = await _db.MessageLogs
+                .FirstOrDefaultAsync(m => m.Id == logId.Value, ct)
+                .ConfigureAwait(false);
+
+            if (log == null) return;
+
+            var resolvedBody = RenderTemplateBody(templateBody, templateParameters);
+
+            log.ContactId ??= contactId;
+            log.Source = "agent";
+            log.MessageKind ??= MessageKind.Template;
+            if (string.IsNullOrWhiteSpace(log.TemplateName))
+                log.TemplateName = templateName;
+            if (string.IsNullOrWhiteSpace(log.TemplateLanguage))
+                log.TemplateLanguage = templateLanguage;
+            if (string.IsNullOrWhiteSpace(log.RenderedBody))
+                log.RenderedBody = resolvedBody;
+            if (string.IsNullOrWhiteSpace(log.MessageContent))
+                log.MessageContent = templateName;
+            if (string.IsNullOrWhiteSpace(log.TemplateSnapshotJson))
+            {
+                log.TemplateSnapshotJson = BuildTemplateSnapshotJson(
+                    templateHeaderKind,
+                    headerMediaUrl,
+                    resolvedBody,
+                    urlButtonParams);
+            }
+
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+
+        private static string BuildTemplateSnapshotJson(
+            string headerKind,
+            string? headerMediaUrl,
+            string bodyText,
+            IReadOnlyList<string> urlButtonParams)
+        {
+            var headerType = string.IsNullOrWhiteSpace(headerKind) ? "none" : headerKind;
+            object? header = headerType == "none"
+                ? null
+                : new
+                {
+                    type = headerType,
+                    mediaUrl = string.IsNullOrWhiteSpace(headerMediaUrl) ? null : headerMediaUrl
+                };
+
+            var payload = new
+            {
+                header,
+                body = new { text = bodyText ?? string.Empty },
+                footer = (object?)null,
+                buttons = urlButtonParams
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Select(x => new { type = "url", text = string.Empty, value = x })
+                    .ToArray()
+            };
+
+            return JsonSerializer.Serialize(payload);
+        }
+
+        private static string RenderTemplateBody(string? templateBody, IReadOnlyList<string> parameters)
+        {
+            var body = templateBody ?? string.Empty;
+            for (var i = 0; i < parameters.Count; i++)
+            {
+                var token = "{{" + (i + 1) + "}}";
+                body = body.Replace(token, parameters[i] ?? string.Empty, StringComparison.Ordinal);
+            }
+
+            return body;
         }
 
         private async Task<ResponseResult> SendMediaAsync(
@@ -218,53 +474,7 @@ namespace xbytechat.api.Features.ChatInbox.Services
             return _messageEngine.SendLocationDirectAsync(dto);
         }
 
-        //public async Task MarkConversationAsReadAsync(ChatInboxMarkReadRequestDto request, CancellationToken ct = default)
-        //{
-        //    if (request == null) throw new ArgumentNullException(nameof(request));
-        //    if (request.BusinessId == Guid.Empty) throw new ArgumentException("BusinessId is required.", nameof(request));
-        //    if (request.ContactId == Guid.Empty) throw new ArgumentException("ContactId is required.", nameof(request));
-        //    if (request.UserId == Guid.Empty) throw new ArgumentException("UserId is required.", nameof(request));
-
-        //    var businessId = request.BusinessId;
-        //    var contactId = request.ContactId;
-        //    var userId = request.UserId;
-        //    var nowUtc = DateTime.UtcNow;
-
-        //    var lastReadAt = request.LastReadAtUtc.HasValue
-        //        ? (request.LastReadAtUtc.Value.Kind == DateTimeKind.Utc
-        //            ? request.LastReadAtUtc.Value
-        //            : request.LastReadAtUtc.Value.ToUniversalTime())
-        //        : nowUtc;
-
-        //    var existing = await _db.ContactReads
-        //        .FirstOrDefaultAsync(
-        //            r => r.BusinessId == businessId && r.ContactId == contactId && r.UserId == userId,
-        //            ct)
-        //        .ConfigureAwait(false);
-
-        //    if (existing == null)
-        //    {
-        //        await _db.ContactReads.AddAsync(new ContactRead
-        //        {
-        //            Id = Guid.NewGuid(),
-        //            BusinessId = businessId,
-        //            ContactId = contactId,
-        //            UserId = userId,
-        //            LastReadAt = lastReadAt
-        //        }, ct).ConfigureAwait(false);
-        //    }
-        //    else
-        //    {
-        //        // Only move forward in time; never go backwards.
-        //        if (existing.LastReadAt < lastReadAt)
-        //        {
-        //            existing.LastReadAt = lastReadAt;
-        //            _db.ContactReads.Update(existing);
-        //        }
-        //    }
-
-        //    await _db.SaveChangesAsync(ct).ConfigureAwait(false);
-        //}
+     
         public async Task MarkConversationAsReadAsync(
       Guid businessId,
       Guid contactId,

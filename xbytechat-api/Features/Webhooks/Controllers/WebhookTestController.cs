@@ -42,12 +42,12 @@ namespace xbytechat.api.Features.Webhooks.Controllers
             var json = JsonSerializer.Serialize(fakePayload);
             var element = JsonDocument.Parse(json).RootElement;
 
-            _queue.Enqueue(element);
+            var enqueued = _queue.Enqueue(element);
 
             return Ok(new
             {
                 message = "✅ Test payload enqueued to simulate failure.",
-                enqueued = true
+                enqueued
             });
         }
     }

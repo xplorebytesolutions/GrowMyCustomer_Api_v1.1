@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileSystemGlobbing;
+using System.Globalization;
 using xbytechat.api.WhatsAppSettings.Services;
 using xbytechat_api.WhatsAppSettings.Models;
 using xbytechat_api.WhatsAppSettings.Services;
@@ -17,6 +18,142 @@ namespace xbytechat.api.WhatsAppSettings.Controllers
 
         public TemplatesController(AppDbContext db, ITemplateSyncService sync, IWhatsAppTemplateFetcherService fetcher)
         { _db = db; _sync = sync; _fetcher = fetcher; }
+
+        private static DateTime? TryReadMetaApprovedAtUtc(string? rawJson)
+        {
+            if (string.IsNullOrWhiteSpace(rawJson)) return null;
+
+            try
+            {
+                var root = ParsePossiblyStringifiedJson(rawJson);
+                var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "last_updated_time",
+                    "lastUpdatedTime",
+                    "updated_time",
+                    "approved_time",
+                    "approvedAt",
+                    "approved_at"
+                };
+
+                var token = FindFirstTimestampToken(root, names);
+                if (token == null || token.Type == Newtonsoft.Json.Linq.JTokenType.Null)
+                    return null;
+
+                var parsed = TryParseProviderTimestampToUtc(token);
+                if (parsed == null) return null;
+
+                // Approved/submitted timestamps should not be in the future (tiny skew allowed).
+                if (parsed.Value > DateTime.UtcNow.AddMinutes(5)) return null;
+                return parsed.Value;
+            }
+            catch
+            {
+                // Keep API resilient to malformed provider payloads.
+            }
+
+            return null;
+        }
+
+        private static Newtonsoft.Json.Linq.JToken ParsePossiblyStringifiedJson(string rawJson)
+        {
+            var token = Newtonsoft.Json.Linq.JToken.Parse(rawJson);
+
+            // Some rows can be double-encoded (JSON object serialized as a JSON string).
+            for (var i = 0; i < 2 && token.Type == Newtonsoft.Json.Linq.JTokenType.String; i++)
+            {
+                var inner = token.ToString()?.Trim();
+                if (string.IsNullOrWhiteSpace(inner)) break;
+                if (!(inner.StartsWith("{") || inner.StartsWith("["))) break;
+                token = Newtonsoft.Json.Linq.JToken.Parse(inner);
+            }
+
+            return token;
+        }
+
+        private static Newtonsoft.Json.Linq.JToken? FindFirstTimestampToken(
+            Newtonsoft.Json.Linq.JToken token,
+            HashSet<string> names)
+        {
+            if (token is Newtonsoft.Json.Linq.JObject obj)
+            {
+                foreach (var p in obj.Properties())
+                {
+                    if (names.Contains(p.Name))
+                        return p.Value;
+                }
+
+                foreach (var p in obj.Properties())
+                {
+                    var nested = FindFirstTimestampToken(p.Value, names);
+                    if (nested != null) return nested;
+                }
+            }
+            else if (token is Newtonsoft.Json.Linq.JArray arr)
+            {
+                foreach (var item in arr)
+                {
+                    var nested = FindFirstTimestampToken(item, names);
+                    if (nested != null) return nested;
+                }
+            }
+
+            return null;
+        }
+
+        private static DateTime? TryParseProviderTimestampToUtc(Newtonsoft.Json.Linq.JToken token)
+        {
+            // Meta can return ISO datetime or unix epoch (seconds / milliseconds).
+            if (token.Type is Newtonsoft.Json.Linq.JTokenType.Integer or Newtonsoft.Json.Linq.JTokenType.Float)
+            {
+                if (long.TryParse(token.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) && n > 0)
+                {
+                    return n >= 1_000_000_000_000
+                        ? DateTimeOffset.FromUnixTimeMilliseconds(n).UtcDateTime
+                        : DateTimeOffset.FromUnixTimeSeconds(n).UtcDateTime;
+                }
+                return null;
+            }
+
+            // If JSON parser already typed it as Date, avoid culture-based string roundtrips.
+            if (token.Type == Newtonsoft.Json.Linq.JTokenType.Date)
+            {
+                var asDto = token.ToObject<DateTimeOffset?>();
+                if (asDto.HasValue) return asDto.Value.UtcDateTime;
+
+                var asDt = token.ToObject<DateTime?>();
+                if (asDt.HasValue)
+                {
+                    return asDt.Value.Kind switch
+                    {
+                        DateTimeKind.Utc => asDt.Value,
+                        DateTimeKind.Local => asDt.Value.ToUniversalTime(),
+                        _ => DateTime.SpecifyKind(asDt.Value, DateTimeKind.Utc)
+                    };
+                }
+            }
+
+            var raw = token.ToString()?.Trim();
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+
+            if (long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var epoch) && epoch > 0)
+            {
+                return epoch >= 1_000_000_000_000
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(epoch).UtcDateTime
+                    : DateTimeOffset.FromUnixTimeSeconds(epoch).UtcDateTime;
+            }
+
+            if (DateTimeOffset.TryParse(
+                raw,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var dto))
+            {
+                return dto.UtcDateTime;
+            }
+
+            return null;
+        }
 
         [HttpGet("summary/{businessId:guid}")]
         [Authorize]
@@ -92,9 +229,12 @@ namespace xbytechat.api.WhatsAppSettings.Controllers
             [FromQuery] string? media = null,
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 10,
-            [FromQuery] string sortKey = "updatedAt",
+            [FromQuery] string sortKey = "approvedAt",
             [FromQuery] string sortDir = "desc")
         {
+            var requestedStatus = (status ?? string.Empty).Trim().ToUpperInvariant();
+            var isPendingBucket = requestedStatus == "PENDING";
+
             var query = _db.WhatsAppTemplates
                 .AsNoTracking()
                 .Where(x => x.BusinessId == businessId && x.IsActive);
@@ -156,25 +296,18 @@ namespace xbytechat.api.WhatsAppSettings.Controllers
                     (x.Body != null && x.Body.Contains(term)));
             }
 
-            // Sorting
             bool isAsc = sortDir?.ToLowerInvariant() == "asc";
-            var sortKeyLower = sortKey?.ToLowerInvariant();
+            var sortKeyLower = (sortKey ?? string.Empty).Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(sortKeyLower))
+                sortKeyLower = "approvedat";
 
-            query = sortKeyLower switch
-            {
-                "name" => isAsc ? query.OrderBy(x => x.Name) : query.OrderByDescending(x => x.Name),
-                "category" => isAsc ? query.OrderBy(x => x.Category) : query.OrderByDescending(x => x.Category),
-                "language" => isAsc ? query.OrderBy(x => x.LanguageCode) : query.OrderByDescending(x => x.LanguageCode),
-                "status" => isAsc ? query.OrderBy(x => x.Status) : query.OrderByDescending(x => x.Status),
-                "createdat" => isAsc ? query.OrderBy(x => x.CreatedAt) : query.OrderByDescending(x => x.CreatedAt),
-                "updatedat" => isAsc ? query.OrderBy(x => x.UpdatedAt) : query.OrderByDescending(x => x.UpdatedAt),
-                _ => query.OrderByDescending(x => x.UpdatedAt)
-            };
+            // Backward-compat: if old clients still request updatedAt on non-pending views,
+            // keep approved-page behavior by sorting on provider approved timestamp.
+            if (!isPendingBucket && sortKeyLower == "updatedat")
+                sortKeyLower = "approvedat";
 
-            var totalCount = await query.CountAsync();
-            var items = await query
-                .Skip((page - 1) * pageSize)
-                .Take(pageSize)
+            // Materialize filtered set, then sort in-memory so we can sort by derived ApprovedAt too.
+            var rows = await query
                 .Select(x => new
                 {
                     x.Name,
@@ -188,14 +321,55 @@ namespace xbytechat.api.WhatsAppSettings.Controllers
                     x.CreatedAt,
                     x.UrlButtons,
                     x.UpdatedAt,
-                    x.LastSyncedAt
+                    x.LastSyncedAt,
+                    x.RawJson
                 })
                 .ToListAsync();
+
+            var mappedItems = rows.Select(x => new
+            {
+                x.Name,
+                x.LanguageCode,
+                x.Status,
+                x.Category,
+                x.BodyPreview,
+                x.BodyVarCount,
+                x.HeaderKind,
+                x.RequiresMediaHeader,
+                x.CreatedAt,
+                x.UrlButtons,
+                x.UpdatedAt,
+                x.LastSyncedAt,
+                ApprovedAt = (DateTime?)(TryReadMetaApprovedAtUtc(x.RawJson) ?? x.UpdatedAt)
+            }).ToList();
+
+            var orderedItems = sortKeyLower switch
+            {
+                "name" => isAsc ? mappedItems.OrderBy(x => x.Name ?? string.Empty) : mappedItems.OrderByDescending(x => x.Name ?? string.Empty),
+                "category" => isAsc ? mappedItems.OrderBy(x => x.Category ?? string.Empty) : mappedItems.OrderByDescending(x => x.Category ?? string.Empty),
+                "language" => isAsc ? mappedItems.OrderBy(x => x.LanguageCode ?? string.Empty) : mappedItems.OrderByDescending(x => x.LanguageCode ?? string.Empty),
+                "status" => isAsc ? mappedItems.OrderBy(x => x.Status ?? string.Empty) : mappedItems.OrderByDescending(x => x.Status ?? string.Empty),
+                "createdat" => isAsc ? mappedItems.OrderBy(x => x.CreatedAt) : mappedItems.OrderByDescending(x => x.CreatedAt),
+                "approvedat" => isAsc
+                    ? mappedItems.OrderBy(x => x.ApprovedAt ?? DateTime.MaxValue)
+                        .ThenBy(x => x.Name ?? string.Empty)
+                    : mappedItems.OrderByDescending(x => x.ApprovedAt ?? DateTime.MinValue)
+                        .ThenBy(x => x.Name ?? string.Empty),
+                "updatedat" => isAsc ? mappedItems.OrderBy(x => x.UpdatedAt) : mappedItems.OrderByDescending(x => x.UpdatedAt),
+                _ => mappedItems.OrderByDescending(x => x.ApprovedAt ?? DateTime.MinValue)
+                    .ThenBy(x => x.Name ?? string.Empty)
+            };
+
+            var totalCount = mappedItems.Count;
+            var pagedItems = orderedItems
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToList();
 
             return Ok(new
             {
                 success = true,
-                templates = items,
+                templates = pagedItems,
                 totalCount,
                 page,
                 pageSize,
