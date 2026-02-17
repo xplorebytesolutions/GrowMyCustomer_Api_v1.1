@@ -782,6 +782,39 @@ TaskScheduler.UnobservedTaskException += (_, e) =>
 };
 var app = builder.Build();
 
+// Fail fast when the deployed database schema is behind the application model.
+await using (var startupScope = app.Services.CreateAsyncScope())
+{
+    var startupLogger = startupScope.ServiceProvider
+        .GetRequiredService<ILoggerFactory>()
+        .CreateLogger("Startup.Database");
+    var db = startupScope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+    try
+    {
+        var pendingMigrations = (await db.Database.GetPendingMigrationsAsync()).ToArray();
+        if (pendingMigrations.Length > 0)
+        {
+            var pendingList = string.Join(", ", pendingMigrations);
+            startupLogger.LogCritical(
+                "Pending EF Core migrations detected: {PendingMigrations}. Apply migrations before starting the API.",
+                pendingList);
+
+            throw new InvalidOperationException(
+                $"Pending EF Core migrations detected ({pendingMigrations.Length}). Apply database migrations before starting the API. Pending: {pendingList}");
+        }
+    }
+    catch (InvalidOperationException)
+    {
+        throw;
+    }
+    catch (Exception ex)
+    {
+        startupLogger.LogCritical(ex, "Database startup validation failed.");
+        throw;
+    }
+}
+
 
 
 app.MapGet("/api/debug/cors", () => Results.Ok(new
